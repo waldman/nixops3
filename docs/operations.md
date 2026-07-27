@@ -190,8 +190,13 @@ Minimum permissions per machine (replace placeholders):
   },
   {
     "Effect": "Allow",
-    "Action": ["secretsmanager:GetSecretValue", "secretsmanager:ListSecrets"],
+    "Action": ["secretsmanager:GetSecretValue"],
     "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:NixOps/*"
+  },
+  {
+    "Effect": "Allow",
+    "Action": ["secretsmanager:ListSecrets"],
+    "Resource": "*"
   }
 ]
 ```

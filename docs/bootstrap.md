@@ -113,6 +113,12 @@ in
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
 
+    # nixos-rebuild and nixos-generate-config live in the system PATH, which
+    # systemd does not inherit. Extend it explicitly.
+    environment = {
+      PATH = "/run/current-system/sw/bin:/run/wrappers/bin";
+    };
+
     serviceConfig = {
       Type = "simple";
       ExecStart = "${nixops3d}/bin/nixops3d";

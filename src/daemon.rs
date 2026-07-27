@@ -94,8 +94,19 @@ pub async fn run_cycle(
     }
 
     // Step 9: Generate configuration.nix
+    // Ensure hardware-configuration.nix exists; nixos-generate-config creates it on
+    // fresh machines that were not installed via the standard NixOS installer.
+    let hw_config_path = Path::new("/etc/nixos/hardware-configuration.nix");
+    if !hw_config_path.exists() {
+        info!("hardware-configuration.nix absent — running nixos-generate-config");
+        match executor.run("nixos-generate-config", &[]) {
+            Ok((0, _)) => info!("nixos-generate-config succeeded"),
+            Ok((code, out)) => error!("nixos-generate-config failed (exit {}): {}", code, out),
+            Err(e) => error!("nixos-generate-config failed to launch: {}", e),
+        }
+    }
     let host_arg = if has_host { Some(hostname) } else { None };
-    let has_hw_config = Path::new("/etc/nixos/hardware-configuration.nix").exists();
+    let has_hw_config = hw_config_path.exists();
     let config_nix = generate_configuration_nix(&config.role, host_arg, has_hw_config);
     let config_nix_path = work_dir.join("configuration.nix");
     if let Err(e) = std::fs::write(&config_nix_path, &config_nix) {

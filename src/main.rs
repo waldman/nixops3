@@ -4,7 +4,6 @@ use aws_credential_types::Credentials;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 use tokio::time::sleep;
 use tracing::{error, info};
 
@@ -210,6 +209,10 @@ async fn build_clients(config: &Config)
 }
 
 fn get_fqdn() -> Result<String> {
-    let output = Command::new("hostname").arg("--fqdn").output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let raw = std::fs::read_to_string("/proc/sys/kernel/hostname")?;
+    let hn = raw.trim().to_string();
+    if hn.is_empty() {
+        return Err(anyhow!("hostname is empty"));
+    }
+    Ok(hn)
 }

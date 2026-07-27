@@ -21,6 +21,7 @@ pub struct AwsCredentials {
 pub struct InventoryConfig {
     pub enabled: Option<bool>,
     pub table: Option<String>,
+    pub ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,8 @@ pub struct Config {
 pub struct ResolvedInventory {
     pub enabled: bool,
     pub table: Option<String>,
+    /// Overrides the default TTL of 2 × poll_interval_secs.
+    pub ttl_secs: Option<u64>,
 }
 
 impl Config {
@@ -49,13 +52,13 @@ impl Config {
         }
 
         let inventory = match raw.inventory {
-            None => ResolvedInventory { enabled: false, table: None },
+            None => ResolvedInventory { enabled: false, table: None, ttl_secs: None },
             Some(inv) => {
                 let enabled = inv.enabled.unwrap_or(false);
                 if enabled && inv.table.is_none() {
                     return Err(anyhow!("inventory.table is required when inventory.enabled = true"));
                 }
-                ResolvedInventory { enabled, table: inv.table }
+                ResolvedInventory { enabled, table: inv.table, ttl_secs: inv.ttl_secs }
             }
         };
 

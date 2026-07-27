@@ -81,7 +81,8 @@ pub async fn write_heartbeat(
 
     let now = Utc::now();
     let last_seen = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let ttl = now.timestamp() + (2 * config.poll_interval_secs as i64);
+    let ttl_duration = config.inventory.ttl_secs.unwrap_or(2 * config.poll_interval_secs) as i64;
+    let ttl = now.timestamp() + ttl_duration;
 
     let mut item: HashMap<String, DynVal> = HashMap::new();
     item.insert("hostname".into(), DynVal::S(hostname.to_string()));

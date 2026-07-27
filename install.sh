@@ -11,7 +11,7 @@ SERVICE_FILE="/etc/systemd/system/nixops3d.service"
 BINARY="nixops3d"
 
 # --- args ---
-BUCKET="" REGION="" ROLE="" TABLE="" ACCESS_KEY="" SECRET_KEY=""
+BUCKET="" REGION="" ROLE="" TABLE="" ACCESS_KEY="" SECRET_KEY="" TTL_DAYS=""
 
 usage() {
   cat <<EOF
@@ -22,6 +22,7 @@ OPTIONS (--bucket, --region, and --role are required together to write a live co
   --region         REGION    AWS region (e.g. us-east-1)
   --role           ROLE      Role path in the bucket (e.g. home/production/webserver)
   --table          TABLE     DynamoDB inventory table name (optional)
+  --ttl-days       DAYS      Inventory TTL in days (default: 2 × poll interval)
   --access-key-id  KEY       AWS access key ID (optional; omit to use instance role or env)
   --secret-key     SECRET    AWS secret access key (required if --access-key-id is set)
 
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --region)        REGION="$2";     shift 2 ;;
     --role)          ROLE="$2";       shift 2 ;;
     --table)         TABLE="$2";      shift 2 ;;
+    --ttl-days)      TTL_DAYS="$2";   shift 2 ;;
     --access-key-id) ACCESS_KEY="$2"; shift 2 ;;
     --secret-key)    SECRET_KEY="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -104,6 +106,9 @@ if [[ -n "$BUCKET" ]]; then
     fi
     if [[ -n "$TABLE" ]]; then
       printf '\n[inventory]\nenabled = true\ntable   = "%s"\n' "$TABLE"
+      if [[ -n "$TTL_DAYS" ]]; then
+        printf 'ttl_secs = %d\n' $((TTL_DAYS * 86400))
+      fi
     fi
   } > "$TOML"
   chmod 600 "$TOML"

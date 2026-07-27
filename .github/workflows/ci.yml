@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl toolchain
+        run: sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Test
+        run: cargo test
+
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "nixops3d") | .version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # master: tagged release
+      - name: Rename binary for release
+        if: github.ref == 'refs/heads/master'
+        run: cp target/x86_64-unknown-linux-musl/release/nixops3d nixops3d
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: nixops3d
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # develop: rolling pre-release
+      - name: Rename binary for dev pre-release
+        if: github.ref == 'refs/heads/develop'
+        run: cp target/x86_64-unknown-linux-musl/release/nixops3d nixops3d-unreleased
+
+      - name: Update dev pre-release
+        if: github.ref == 'refs/heads/develop'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-unreleased
+          name: dev-unreleased
+          prerelease: true
+          files: nixops3d-unreleased
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

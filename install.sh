@@ -136,8 +136,28 @@ EOF
   fi
 fi
 
-# --- systemd unit ---
-cat > "$SERVICE_FILE" <<EOF
+# --- systemd unit (skipped on NixOS) ---
+IS_NIXOS=0
+[[ -f /etc/NIXOS ]] && IS_NIXOS=1
+
+if [[ $IS_NIXOS -eq 1 ]]; then
+  cat <<'EOF'
+
+NixOS detected — skipping systemd unit installation.
+On NixOS, /etc/systemd/system/ is read-only and managed by nixos-rebuild.
+
+Bootstrap steps:
+  1. Run the daemon once manually to apply the S3 config:
+       sudo /usr/local/bin/nixops3d
+  2. The first cycle runs nixos-rebuild switch, which installs and starts
+     the nixops3d service from your S3 role config (profiles/nixops3d.nix).
+  3. After nixos-rebuild completes, kill the manual process:
+       sudo pkill nixops3d
+  4. The service is now owned by NixOS and starts automatically on boot:
+       systemctl status nixops3d
+EOF
+else
+  cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=NixOpS3 configuration daemon
 After=network-online.target
@@ -156,42 +176,19 @@ StateDirectoryMode=0755
 [Install]
 WantedBy=multi-user.target
 EOF
+  systemctl daemon-reload
+  echo "Service installed: $SERVICE_FILE"
 
-systemctl daemon-reload
-echo "Service installed: $SERVICE_FILE"
-
-# --- NixOS warning ---
-IS_NIXOS=0
-[[ -f /etc/NIXOS ]] && IS_NIXOS=1
-
-if [[ $IS_NIXOS -eq 1 ]]; then
-  cat <<'EOF'
-
-WARNING (NixOS detected):
-  This installer writes a bootstrap systemd unit to /etc/systemd/system/.
-  On NixOS, nixos-rebuild switch regenerates that directory from your NixOS
-  config — the bootstrap unit will be REMOVED after the first rebuild unless
-  your S3 role config includes the nixops3d service definition.
-
-  Add the NixOS module from docs/bootstrap.md to your role's main.nix so
-  that NixOS owns the service after the first cycle. The daemon's first run
-  will apply the S3 config, which should include the service — after that,
-  NixOS manages it permanently.
-
-  See: https://github.com/waldman/nixops3/blob/master/docs/bootstrap.md
-EOF
-fi
-
-# --- start or prompt ---
-if [[ -n "$BUCKET" ]]; then
-  systemctl enable --now nixops3d
-  echo ""
-  echo "nixops3d is running. Follow logs:"
-  echo "  journalctl -u nixops3d -f"
-else
-  echo ""
-  echo "Next steps:"
-  echo "  1. Edit $TOML"
-  echo "  2. systemctl enable --now nixops3d"
-  echo "  3. journalctl -u nixops3d -f"
+  if [[ -n "$BUCKET" ]]; then
+    systemctl enable --now nixops3d
+    echo ""
+    echo "nixops3d is running. Follow logs:"
+    echo "  journalctl -u nixops3d -f"
+  else
+    echo ""
+    echo "Next steps:"
+    echo "  1. Edit $TOML"
+    echo "  2. systemctl enable --now nixops3d"
+    echo "  3. journalctl -u nixops3d -f"
+  fi
 fi

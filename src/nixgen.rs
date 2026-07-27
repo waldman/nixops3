@@ -7,11 +7,12 @@
 ///
 /// Profile selection is the role's responsibility via `<nixops3/profiles/...>` imports
 /// in its own `main.nix`. The daemon sets `-I nixops3=<work_dir>` so that path resolves.
-pub fn generate_configuration_nix(role: &str, hostname: Option<&str>) -> String {
-    let mut imports = vec![
-        "/etc/nixos/hardware-configuration.nix".to_string(),
-        format!("./roles/{}/main.nix", role),
-    ];
+pub fn generate_configuration_nix(role: &str, hostname: Option<&str>, has_hw_config: bool) -> String {
+    let mut imports = Vec::new();
+    if has_hw_config {
+        imports.push("/etc/nixos/hardware-configuration.nix".to_string());
+    }
+    imports.push(format!("./roles/{}/main.nix", role));
 
     if let Some(h) = hostname {
         imports.push(format!("./roles/{}/{}/main.nix", role, h));
@@ -31,10 +32,17 @@ mod tests {
 
     #[test]
     fn test_5_1_basic_no_host() {
-        let out = generate_configuration_nix("home/production/ada", None);
+        let out = generate_configuration_nix("home/production/ada", None, true);
         assert!(out.contains("/etc/nixos/hardware-configuration.nix"));
         assert!(out.contains("./roles/home/production/ada/main.nix"));
         assert!(!out.contains("ada-01"), "no host import expected");
+    }
+
+    #[test]
+    fn test_5_1b_no_hw_config() {
+        let out = generate_configuration_nix("home/production/ada", None, false);
+        assert!(!out.contains("hardware-configuration.nix"));
+        assert!(out.contains("./roles/home/production/ada/main.nix"));
     }
 
     #[test]
@@ -42,6 +50,7 @@ mod tests {
         let out = generate_configuration_nix(
             "home/production/ada",
             Some("ada-01.waldman.internal"),
+            false,
         );
         assert!(out.contains("./roles/home/production/ada/main.nix"));
         assert!(out.contains("./roles/home/production/ada/ada-01.waldman.internal/main.nix"));
@@ -52,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_5_3_hardware_always_first() {
-        let out = generate_configuration_nix("home/production/ada", None);
+        let out = generate_configuration_nix("home/production/ada", None, true);
         let hw_idx = out.find("/etc/nixos/hardware-configuration.nix").unwrap();
         let role_idx = out.find("./roles/").unwrap();
         assert!(hw_idx < role_idx);

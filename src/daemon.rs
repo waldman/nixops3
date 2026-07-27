@@ -95,7 +95,8 @@ pub async fn run_cycle(
 
     // Step 9: Generate configuration.nix
     let host_arg = if has_host { Some(hostname) } else { None };
-    let config_nix = generate_configuration_nix(&config.role, host_arg);
+    let has_hw_config = Path::new("/etc/nixos/hardware-configuration.nix").exists();
+    let config_nix = generate_configuration_nix(&config.role, host_arg, has_hw_config);
     let config_nix_path = work_dir.join("configuration.nix");
     if let Err(e) = std::fs::write(&config_nix_path, &config_nix) {
         error!("failed to write configuration.nix: {}", e);

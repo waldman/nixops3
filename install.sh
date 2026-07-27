@@ -11,17 +11,19 @@ SERVICE_FILE="/etc/systemd/system/nixops3d.service"
 BINARY="nixops3d"
 
 # --- args ---
-BUCKET="" REGION="" ROLE="" TABLE=""
+BUCKET="" REGION="" ROLE="" TABLE="" ACCESS_KEY="" SECRET_KEY=""
 
 usage() {
   cat <<EOF
 Usage: sudo bash install.sh [OPTIONS]
 
-OPTIONS (all three core options are required together to write a live config):
-  --bucket BUCKET    S3 bucket name
-  --region REGION    AWS region (e.g. us-east-1)
-  --role   ROLE      Role path in the bucket (e.g. home/production/webserver)
-  --table  TABLE     DynamoDB inventory table name (optional)
+OPTIONS (--bucket, --region, and --role are required together to write a live config):
+  --bucket         BUCKET    S3 bucket name
+  --region         REGION    AWS region (e.g. us-east-1)
+  --role           ROLE      Role path in the bucket (e.g. home/production/webserver)
+  --table          TABLE     DynamoDB inventory table name (optional)
+  --access-key-id  KEY       AWS access key ID (optional; omit to use instance role or env)
+  --secret-key     SECRET    AWS secret access key (required if --access-key-id is set)
 
 Without options: installs the binary and writes a placeholder config.
 You must edit $CONFIG_DIR/nixops3.toml before starting the daemon.
@@ -30,10 +32,12 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --bucket) BUCKET="$2"; shift 2 ;;
-    --region) REGION="$2"; shift 2 ;;
-    --role)   ROLE="$2";   shift 2 ;;
-    --table)  TABLE="$2";  shift 2 ;;
+    --bucket)        BUCKET="$2";     shift 2 ;;
+    --region)        REGION="$2";     shift 2 ;;
+    --role)          ROLE="$2";       shift 2 ;;
+    --table)         TABLE="$2";      shift 2 ;;
+    --access-key-id) ACCESS_KEY="$2"; shift 2 ;;
+    --secret-key)    SECRET_KEY="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage >&2; exit 1 ;;
   esac
@@ -44,6 +48,11 @@ if [[ -n "$BUCKET" || -n "$REGION" || -n "$ROLE" ]]; then
     echo "Error: --bucket, --region, and --role must all be provided together." >&2
     exit 1
   fi
+fi
+
+if [[ -n "$ACCESS_KEY" && -z "$SECRET_KEY" ]] || [[ -z "$ACCESS_KEY" && -n "$SECRET_KEY" ]]; then
+  echo "Error: --access-key-id and --secret-key must be provided together." >&2
+  exit 1
 fi
 
 if [[ $EUID -ne 0 ]]; then
@@ -89,6 +98,10 @@ if [[ -n "$BUCKET" ]]; then
     echo "bucket = \"$BUCKET\""
     echo "region = \"$REGION\""
     echo "role   = \"$ROLE\""
+    if [[ -n "$ACCESS_KEY" ]]; then
+      printf '\n[aws]\naccess_key_id     = "%s"\nsecret_access_key = "%s"\n' \
+        "$ACCESS_KEY" "$SECRET_KEY"
+    fi
     if [[ -n "$TABLE" ]]; then
       printf '\n[inventory]\nenabled = true\ntable   = "%s"\n' "$TABLE"
     fi

@@ -60,8 +60,9 @@ async fn run_bootstrap(args: &[String]) -> Result<()> {
 
     // Optionally set the system hostname
     if let Some(ref h) = hostname {
+        // --static avoids the "pretty hostname" call which NixOS rejects
         Command::new("hostnamectl")
-            .args(["set-hostname", h])
+            .args(["set-hostname", "--static", h])
             .status()
             .map_err(|e| anyhow!("hostnamectl failed: {}", e))?;
         info!("hostname set to {}", h);

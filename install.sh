@@ -64,6 +64,19 @@ curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}" \
 chmod +x "$INSTALL_DIR/$BINARY"
 echo "Installed: $INSTALL_DIR/$BINARY"
 
+# --- NixOS: ensure root has a nixos channel so nixpkgs is findable ---
+if [[ -f /etc/NIXOS ]] && [[ ! -d /nix/var/nix/profiles/per-user/root/channels ]]; then
+  NIXOS_VERSION=$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-}")
+  if [[ -n "$NIXOS_VERSION" ]]; then
+    echo "NixOS: adding nixos-${NIXOS_VERSION} channel for root..."
+    nix-channel --add "https://nixos.org/channels/nixos-${NIXOS_VERSION}" nixos
+    nix-channel --update nixos
+  else
+    echo "Warning: NixOS detected but VERSION_ID missing in /etc/os-release." >&2
+    echo "  Run manually: nix-channel --add https://nixos.org/channels/nixos-<version> nixos && nix-channel --update" >&2
+  fi
+fi
+
 # --- build bootstrap args and run ---
 ARGS=(bootstrap --bucket "$BUCKET" --region "$REGION" --role "$ROLE")
 [[ -n "$HOSTNAME"   ]] && ARGS+=(--hostname "$HOSTNAME")

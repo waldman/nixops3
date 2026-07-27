@@ -1,4 +1,4 @@
-# Test Specification — nixops3d Daemon
+# Test Specification — nixops3 Daemon
 
 All tests are written in Rust. Unit tests live in `src/` as `#[cfg(test)]` modules. Integration tests live in `tests/`.
 
@@ -382,7 +382,7 @@ All integration tests use a `TestContext` struct that wires together:
 ```rust
 let ctx = TestContext::builder()
     .s3_file("profiles/base.nix", "{ ... }:")
-    .s3_file("nix-roles/home/production/ada/main.nix", "{ ... }:")
+    .s3_file("roles/home/production/ada/main.nix", "{ ... }:")
     .last_hash("") // first run
     .build();
 

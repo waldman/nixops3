@@ -47,7 +47,7 @@ jobs:
       # master: tagged release
       - name: Rename binary for release
         if: github.ref == 'refs/heads/master'
-        run: cp target/x86_64-unknown-linux-musl/release/nixops3d nixops3d
+        run: cp target/x86_64-unknown-linux-musl/release/nixops3 nixops3
 
       - name: Create GitHub Release
         if: github.ref == 'refs/heads/master'
@@ -55,14 +55,14 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
-          files: nixops3d
+          files: nixops3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # develop: rolling pre-release
       - name: Rename binary for dev pre-release
         if: github.ref == 'refs/heads/develop'
-        run: cp target/x86_64-unknown-linux-musl/release/nixops3d nixops3d-unreleased
+        run: cp target/x86_64-unknown-linux-musl/release/nixops3 nixops3-unreleased
 
       - name: Update dev pre-release
         if: github.ref == 'refs/heads/develop'
@@ -71,6 +71,6 @@ jobs:
           tag_name: dev-unreleased
           name: dev-unreleased
           prerelease: true
-          files: nixops3d-unreleased
+          files: nixops3-unreleased
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

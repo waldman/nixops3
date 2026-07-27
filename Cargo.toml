@@ -1,11 +1,11 @@
 [package]
 name = "nixops3d"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 license = "MIT"
 
 [[bin]]
-name = "nixops3d"
+name = "nixops3"
 path = "src/main.rs"
 
 [lib]

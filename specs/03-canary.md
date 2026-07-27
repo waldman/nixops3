@@ -27,7 +27,7 @@ At the start of each poll cycle, before downloading any config files, the daemon
 | Present | Yes | Normal apply |
 | Present | No | Skip apply; log; write heartbeat with `status: canary_skip` |
 
-The daemon checks `canary.txt` using `hostname --fqdn` to resolve the local FQDN.
+The daemon resolves the local hostname from `/proc/sys/kernel/hostname` (see spec 02 — Hostname Resolution).
 
 When skipping, the daemon does NOT update `last-hash`. The skipped node will apply the config as soon as `canary.txt` is removed.
 

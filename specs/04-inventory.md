@@ -2,7 +2,7 @@
 
 ## Purpose
 
-When enabled, `nixops3d` reports machine state to a DynamoDB table after each poll cycle. This provides:
+When enabled, `nixops3` reports machine state to a DynamoDB table after each poll cycle. This provides:
 
 - Fleet-wide visibility (last seen, status, IP, role)
 - A queryable inventory used by `.nix` files via `builtins.fromJSON` (equivalent to Chef's `search()` or PuppetDB)
@@ -13,18 +13,18 @@ The feature is opt-in. Disabling it has no effect on config apply behaviour.
 
 **Table name**: configured in `nixops3.toml` (`inventory.table`)
 **Partition key**: `hostname` (String)
-**TTL attribute**: `ttl` (Number, Unix epoch seconds) — set to `now + 2 * poll_interval_secs`
+**TTL attribute**: `ttl` (Number, Unix epoch seconds) — defaults to `now + 2 * poll_interval_secs`; overridable via `inventory.ttl_secs` in `nixops3.toml` (or `--ttl-days` in bootstrap)
 
 ### Item Attributes
 
 | Attribute | Type | Source | Example |
 |-----------|------|--------|---------|
-| `hostname` | S | `hostname --fqdn` | `ada-01.waldman.internal` |
+| `hostname` | S | `/proc/sys/kernel/hostname` | `ada-01.waldman.internal` |
 | `machine_id` | S | `/etc/machine-id` | `a1b2c3d4...` |
 | `role` | S | `nixops3.toml` | `home/production/ada` |
 | `iface` | S | primary network interface | `eth0` |
 | `ip` | S | IP of primary interface | `192.168.15.50` |
-| `network` | S | network/prefix | `192.168.15.0/24` |
+| `network` | S | network/prefix (v1: always `"unknown"`) | `192.168.15.0/24` |
 | `last_run_status` | S | `ok`, `failed`, `canary_skip` | `ok` |
 | `last_seen` | S | ISO 8601 UTC | `2026-07-26T21:00:00Z` |
 | `ttl` | N | Unix epoch | `1753570800` |
@@ -32,6 +32,21 @@ The feature is opt-in. Disabling it has no effect on config apply behaviour.
 ### Primary Network Interface Detection
 
 The daemon selects the interface with the default route (`ip route get 1.1.1.1`). If detection fails, `iface` and `ip` are set to `"unknown"`.
+
+The `network` field (CIDR prefix) is not yet computed in v1. It is always written as `"unknown"`.
+
+### TTL Configuration
+
+The default TTL is `now + 2 × poll_interval_secs`. To override, set `inventory.ttl_secs` in `nixops3.toml`:
+
+```toml
+[inventory]
+enabled  = true
+table    = "nixops3-inventory"
+ttl_secs = 1296000   # 15 days
+```
+
+The `--ttl-days` flag in the bootstrap command converts days to seconds and writes `ttl_secs` into the config file.
 
 ## IAM Policy Requirements
 

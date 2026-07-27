@@ -12,6 +12,7 @@ use nixops3d::config::Config;
 use nixops3d::daemon::run_cycle;
 use nixops3d::executor::ProcessExecutor;
 use nixops3d::timer::sleep_duration;
+use nixops3d::types::CycleOutcome;
 
 const CONFIG_PATH: &str = "/etc/nixops3/nixops3.toml";
 const WORK_DIR: &str = "/var/lib/nixops3/current";
@@ -31,9 +32,10 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     match args.get(1).map(|s| s.as_str()) {
-        Some("bootstrap") => run_bootstrap(&args[2..]).await,
+        Some("bootstrap")             => run_bootstrap(&args[2..]).await,
+        Some("--daemon") | Some("-d") => run_daemon().await,
         Some(other) => Err(anyhow!("unknown subcommand: {}", other)),
-        None => run_daemon().await,
+        None => run_oneshot().await,
     }
 }
 
@@ -144,6 +146,33 @@ fn parse_flags(args: &[String]) -> HashMap<String, String> {
         }
     }
     map
+}
+
+// ── oneshot ──────────────────────────────────────────────────────────────────
+
+async fn run_oneshot() -> Result<()> {
+    let config = Config::from_file(CONFIG_PATH)?;
+    let hostname = get_fqdn()?;
+    info!("oneshot: hostname={}, role={}", hostname, config.role);
+
+    let work_dir    = Path::new(WORK_DIR);
+    let hash_path   = Path::new(HASH_PATH);
+    let secrets_dir = Path::new(SECRETS_DIR);
+    std::fs::create_dir_all(work_dir)?;
+
+    let (s3, dynamo_client, secrets_client) = build_clients(&config).await;
+    let executor = ProcessExecutor;
+    let dynamo: Option<&dyn nixops3d::traits::DynamoOps> =
+        if config.inventory.enabled { Some(&dynamo_client) } else { None };
+
+    let outcome = run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
+                            &executor, work_dir, hash_path, secrets_dir).await;
+
+    match outcome {
+        CycleOutcome::Applied | CycleOutcome::HashUnchanged | CycleOutcome::CanarySkip => Ok(()),
+        CycleOutcome::S3Error | CycleOutcome::RebuildFailed =>
+            Err(anyhow!("cycle failed: {:?}", outcome)),
+    }
 }
 
 // ── daemon ───────────────────────────────────────────────────────────────────

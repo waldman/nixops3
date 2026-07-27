@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# nixops3d installer
+# nixops3 installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/waldman/nixops3/master/install.sh | sudo bash -s -- [OPTIONS]
 set -euo pipefail
 
 REPO="waldman/nixops3"
 INSTALL_DIR="/usr/local/bin"
-BINARY="nixops3d"
+BINARY="nixops3"
 
 # --- args ---
 BUCKET="" REGION="" ROLE="" HOSTNAME="" TABLE="" TTL_DAYS="" ACCESS_KEY="" SECRET_KEY=""
@@ -57,7 +57,7 @@ LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
 
 [[ -z "$LATEST" ]] && { echo "Error: could not determine latest release." >&2; exit 1; }
 
-echo "Downloading nixops3d ${LATEST}..."
+echo "Downloading nixops3 ${LATEST}..."
 mkdir -p "$INSTALL_DIR"
 curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}" \
   -o "$INSTALL_DIR/$BINARY"

@@ -112,4 +112,4 @@ On `ListSecrets` failure:
 
 Secret values are NOT included in the hash computation. The hash covers only `.nix` files. A secret rotation in AWS Secrets Manager will not trigger a `nixos-rebuild`. If a profile reads a secret at eval time (`builtins.readFile`), the rebuild must be triggered by a config change (even a no-op comment change) to pick up the new value.
 
-Services using `EnvironmentFile` or `LoadCredential` pick up rotated secrets on their next restart, independently of nixops3d.
+Services using `EnvironmentFile` or `LoadCredential` pick up rotated secrets on their next restart, independently of nixops3.

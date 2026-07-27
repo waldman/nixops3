@@ -31,6 +31,21 @@ profiles/<name>.nix                                      ← shared profiles
 - **Fleet inventory** — optional DynamoDB heartbeat; query results available to `.nix` files via `builtins.fromJSON`
 - **Static binary** — single `x86_64-unknown-linux-musl` Rust binary, no runtime dependencies
 
+## Installation
+
+```bash
+# Install with placeholder config — edit /etc/nixops3/nixops3.toml before starting
+curl -fsSL https://raw.githubusercontent.com/waldman/nixops3/master/install.sh | sudo bash
+
+# Install with a real config and start immediately
+curl -fsSL https://raw.githubusercontent.com/waldman/nixops3/master/install.sh | \
+  sudo bash -s -- --bucket my-bucket --region us-east-1 --role home/production/webserver
+```
+
+The installer downloads the latest release binary, writes `/etc/nixops3/nixops3.toml`, installs a systemd unit, and optionally starts the daemon.
+
+> **NixOS note:** The installer writes a bootstrap systemd unit to `/etc/systemd/system/`. On NixOS, `nixos-rebuild switch` regenerates that directory from your NixOS config — the bootstrap unit will be removed after the first rebuild. Ensure your S3 role config includes the nixops3d service definition before the daemon runs. See [`docs/bootstrap.md`](docs/bootstrap.md).
+
 ## Quickstart
 
 ### 1. Prerequisites
@@ -39,15 +54,14 @@ profiles/<name>.nix                                      ← shared profiles
 - An IAM identity for each machine with S3 read access to that bucket
 - `nixos-rebuild` available on the managed machine (it's a NixOS machine, so it is)
 
-### 2. Build the daemon
+### 2. Get the binary
+
+Download from [Releases](https://github.com/waldman/nixops3/releases) or build from source:
 
 ```bash
-# requires the musl target
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
-
-# binary at:
-target/x86_64-unknown-linux-musl/release/nixops3d
+# binary: target/x86_64-unknown-linux-musl/release/nixops3d
 ```
 
 Copy the binary to `/usr/local/bin/nixops3d` on each managed machine.

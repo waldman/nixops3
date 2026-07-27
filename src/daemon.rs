@@ -106,7 +106,7 @@ pub async fn run_cycle(
     // Step 10: Run nixos-rebuild
     // -I nixops3=<work_dir> lets role main.nix use <nixops3/profiles/...> imports
     // -I nixpkgs=<path>     ensures nixpkgs is findable even when NIX_PATH is stripped
-    let nixos_config_arg = format!("nixos-config={}", work_dir.display());
+    let nixos_config_arg = format!("nixos-config={}", work_dir.join("configuration.nix").display());
     let nixops3_arg = format!("nixops3={}", work_dir.display());
     let mut args = vec!["switch", "-I", &nixos_config_arg, "-I", &nixops3_arg];
     let nixpkgs_arg;

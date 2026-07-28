@@ -20,25 +20,43 @@ fields appear in `main.yaml` (spec 08):
 The operator can restrict which tiers are allowed via `nixops3.toml` flags
 (see [Config Options](#config-options)).
 
-## Config Fields
+## Design principle: let Nix handle nixpkgs
 
-Inside `main.yaml` (spec 08):
+Nix already knows how to fetch, cache, and garbage-collect nixpkgs source.
+The daemon does **not** download, extract, or cache nixpkgs itself. Instead:
+
+- **Pinned tier:** construct a URL like
+  `https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz` and pass it as
+  `-I nixpkgs=<url>`. Nix downloads if not in its store, extracts, uses.
+- **Floating tier:** resolve the channel to a concrete rev (see below), then
+  behave like Pinned with that resolved rev.
+- **Loose tier:** existing local `find_nixpkgs()` fallback, unchanged from v0.3.
+
+Nix's store handles caching automatically. Old revs are GC'd along with the
+system generations that referenced them — the daemon has no LRU knob and no
+local cache dir. Simpler than v0.4's original attempt, and Nix's GC is more
+correct than any hand-rolled retention policy.
+
+## Config Fields (in `main.yaml`)
+
+See spec 08 for the file. Under `pin.nixpkgs`:
 
 ```yaml
 pin:
   nixpkgs:
     channel: nixos-25.05                    # required if pin present
-    rev:     abc1234def567890abcdef123...   # optional; 40-char hex
+    rev:     abc1234def567890abcdef123...   # optional; 40-char lowercase hex
 ```
 
 **`channel`** — arbitrary string identifying the nixpkgs channel or branch
-(e.g. `nixos-25.05`, `nixos-unstable`, `nixos-25.11-small`). The daemon
-uses this to resolve to a rev in the Floating tier and to log/report in the
-Pinned tier. No validation is performed.
+(e.g. `nixos-25.05`, `nixos-unstable`, `nixos-25.11-small`). The daemon uses
+this to resolve to a rev in the Floating tier. In the Pinned tier it is
+recorded in the heartbeat (`nixpkgs_channel`) but has no operational effect.
+No validation is performed on the string.
 
 **`rev`** — 40-character lowercase hex string (git sha). If present, the
-daemon uses this rev directly and does not resolve the channel. If absent
-(Floating tier), the daemon resolves the channel at every cycle.
+daemon uses it directly and does not resolve the channel. If absent (Floating
+tier), the daemon resolves the channel at every cycle.
 
 ## The Three Tiers
 
@@ -58,28 +76,38 @@ Effective when neither role nor host `main.yaml` declares a `pin:` block
 - `nixpkgs_rev = ""` (discovery result is not captured in the heartbeat)
 
 **Disabled by:** `require_pin = true` in `nixops3.toml`. When set, missing
-`pin:` block causes the cycle to fail with `CycleOutcome::S3Error`
-(misconfiguration; not truly S3 but the same "config not usable" bucket).
+`pin:` block causes the cycle to fail.
 
 ### Tier 2: Floating (`channel` only)
 
 Effective when merged `main.yaml` has `pin.nixpkgs.channel` but no `rev`.
 
-**Daemon behavior:** resolves the channel to the current rev via GitHub:
+**Resolution:** the daemon does one HTTP GET to:
 
 ```
-GET https://api.github.com/repos/NixOS/nixpkgs/commits/<channel>
+https://channels.nixos.org/<channel>/git-revision
 ```
 
-Response's `.sha` is the current rev for that branch. The daemon then
-follows the same steps as the Pinned tier below with the resolved rev.
+This is a small text file (40-char hex + newline) served by nixos.org's CDN.
+**Not GitHub API** — no per-IP rate limit concern. Returns the last
+Hydra-tested rev for that channel (more conservative than "latest commit on
+branch" — matches what `nix-channel --update` would fetch).
 
-**Resolution caching:** the daemon caches channel→rev for `channel_ttl_secs`
-seconds (default 300) to avoid hammering GitHub across rapid poll cycles.
-Cache is in-process only (lost on daemon restart).
+**Caching:** in-process TTL cache (`channel_ttl_secs`, default 300 seconds)
+so rapid poll cycles hit the resolver at most once per channel per TTL
+window.
 
-**Drift bound:** all hosts converge within one poll interval + jitter of a
-channel update. During the drift window, `nixpkgs_rev` in the heartbeat
+**Invocation:** with the resolved rev, the daemon passes:
+
+```
+-I nixpkgs=https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz
+```
+
+Nix downloads (from its own tarball cache if present) and uses.
+
+**Drift bound:** channels.nixos.org updates roughly every 8 hours (when
+Hydra publishes a new channel). All hosts converge within one poll interval
+of a channel update. During the drift window, `nixpkgs_rev` in the heartbeat
 reveals which host is on which rev.
 
 **Log:** `INFO nixpkgs channel=<channel> rev=<resolved> (floating)`
@@ -89,15 +117,20 @@ reveals which host is on which rev.
 - `nixpkgs_channel = "<channel>"`
 - `nixpkgs_rev = "<resolved>"`
 
-**Disabled by:** `require_explicit_rev = true` in `nixops3.toml`. When set,
-`pin.nixpkgs` without `rev` causes the cycle to fail.
+**Disabled by:** `require_explicit_rev = true` in `nixops3.toml`.
 
 ### Tier 3: Pinned (`channel` + `rev`)
 
 Effective when merged `main.yaml` has both `pin.nixpkgs.channel` and
 `pin.nixpkgs.rev`.
 
-**Daemon behavior:** uses `rev` directly, no resolution call.
+**Resolution:** none. Daemon uses `rev` directly.
+
+**Invocation:**
+
+```
+-I nixpkgs=https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz
+```
 
 **Log:** `INFO nixpkgs channel=<channel> rev=<rev> (pinned)`
 
@@ -106,79 +139,46 @@ Effective when merged `main.yaml` has both `pin.nixpkgs.channel` and
 - `nixpkgs_channel = "<channel>"`
 - `nixpkgs_rev = "<rev>"`
 
-## Local Cache
+## What the daemon does NOT do
 
-For Floating and Pinned tiers, the daemon materializes nixpkgs locally:
+Deliberately not in scope, because Nix already handles it:
 
-- **Cache path:** `/var/lib/nixops3/nixpkgs/<rev>/`
-- **Content-addressed by rev.** Git guarantees uniqueness of a sha; two
-  roles pinning the same rev share the same cache entry.
-- **Download URL:** `https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz`
-- **Extraction:** `tar --strip-components=1` so the resulting directory is
-  the nixpkgs root (contains `default.nix`, `pkgs/`, etc.). No wrapper dir.
-- **Extraction is to a tmp dir first** (`nixpkgs/.tmp-<rev>-<pid>/`), then
-  renamed into place — same pattern as commit tree extraction (spec 02).
-  Interrupted downloads leave no partial cache entry.
+- **Download tarballs.** Nix does this via its normal `fetchTarball`
+  facility triggered by the `-I` flag.
+- **Extract tarballs.** Nix does this.
+- **Cache nixpkgs locally.** Nix uses its own tarball cache
+  (`/nix/var/nix/tarballs/`) and store.
+- **Prune old cached copies.** Nix's `nix-collect-garbage` handles this,
+  driven by NixOS generation lifetime.
+- **Verify sha256 of downloaded content.** Nix verifies against its internal
+  narinfo. If we ever want a stronger check, we can add optional `sha256`
+  to the pin block later, and pass it to Nix as `fetchTarball { url = ...;
+  sha256 = ...; }` semantics.
 
-## Cache Lifecycle
-
-**Prune** after each successful apply:
-
-- Keep the newest `nixpkgs_retain` entries (default 3, configurable) by mtime
-- **Never** delete the rev currently in use by the applied commit
-- Ignore `.tmp-*` directories (cleaned up separately at cycle start)
-
-**Sizing:** a typical nixpkgs archive is ~50 MB compressed, ~200 MB extracted.
-`nixpkgs_retain = 3` costs ~600 MB. Adjust if disk-constrained.
-
-## nixos-rebuild Invocation
-
-Once the pin is resolved and cached at `/var/lib/nixops3/nixpkgs/<rev>/`, the
-daemon replaces the nixpkgs discovery result with the cache path:
-
-```sh
-nixos-rebuild switch \
-  -I nixos-config=/etc/nixos/configuration.nix \
-  -I nixops3=/var/lib/nixops3/commits/<sha> \
-  -I nixpkgs=/var/lib/nixops3/nixpkgs/<rev>
-```
-
-For the Loose tier, `-I nixpkgs=` continues to use discovered channels
-exactly as in v0.3 (see spec 02, nixpkgs discovery section).
-
-## Config Options
-
-Additions to `nixops3.toml`:
+## Config Options (`nixops3.toml`)
 
 ```toml
 [pins]
 require_pin          = false     # true: missing pin: block → cycle fails
 require_explicit_rev = false     # true: pin without rev → cycle fails
-nixpkgs_retain       = 3         # LRU size for /var/lib/nixops3/nixpkgs/
 channel_ttl_secs     = 300       # in-process cache TTL for channel resolution
 ```
 
+No `nixpkgs_retain` — no local cache to size. Nix's GC handles retention.
+
 **Defaults are permissive.** All three tiers work out of the box. Operators
 who care about strict convergence flip the flags.
-
-**`require_pin` and `require_explicit_rev` are independent.** Setting
-`require_pin = true` still allows Floating (channel-only) pins. To require
-Pinned tier fleet-wide, set both flags true.
 
 ## Error Modes
 
 | Condition | Outcome |
 |---|---|
-| `pin:` present but malformed YAML | Cycle fails with `S3Error`; log error |
-| `pin.nixpkgs` present without `channel` | Cycle fails with `S3Error`; log error |
-| `channel` present, `require_explicit_rev = true` | Cycle fails with `S3Error`; log error |
-| No `pin:` block, `require_pin = true` | Cycle fails with `S3Error`; log error |
-| Channel resolution HTTP fails (network, 404, timeout) | Cycle fails with `S3Error`; log error |
-| Tarball download fails | Cycle fails with `S3Error`; log error |
-| GitHub API rate limit hit | Cycle fails with `S3Error`; log error with hint about rate limits |
-
-All errors leave the symlink and cache in a consistent state — either the
-prior sha is still applied, or the new sha isn't yet. No half-state.
+| `pin:` present but malformed YAML | Cycle fails; log error |
+| `pin.nixpkgs` present without `channel` | Cycle fails; log error |
+| `channel` present, `require_explicit_rev = true` | Cycle fails; log error |
+| No `pin:` block, `require_pin = true` | Cycle fails; log error |
+| Channel resolution HTTP fails (network, 404, timeout) | Cycle fails; log error |
+| Nix download fails at rebuild time | `nixos-rebuild` returns non-zero; standard rebuild-failed handling |
 
 ## Convergence Visibility
 
@@ -194,9 +194,9 @@ aws dynamodb scan --table-name nixops3-inventory \
 `applied_sha`, same `nixpkgs_channel`, same `nixpkgs_rev`, `pin_mode =
 pinned`.
 
-**Converged fleet** (Floating tier): all hosts show the same `applied_sha`,
-same `nixpkgs_channel`; `nixpkgs_rev` may differ during the drift window
-after a channel update.
+**Converged fleet** (Floating tier): all hosts show the same `applied_sha`
+and `nixpkgs_channel`; `nixpkgs_rev` may briefly differ during the drift
+window after a channel update.
 
 **Misconfiguration:** hosts showing `pin_mode = loose` when the operator
 expected pinning — indicates a `main.yaml` missing or incomplete.
@@ -206,9 +206,8 @@ expected pinning — indicates a `main.yaml` missing or incomplete.
 - **Overlays, home-manager, other non-nixpkgs inputs.** The `pin.nixpkgs`
   namespace leaves room for `pin.home-manager`, `pin.overlays.foo`, etc.,
   but v0.4 supports `nixpkgs` only.
-- **sha256 verification of the downloaded tarball.** Trust GitHub HTTPS.
-  Add optional `sha256` field in a later version for belt-and-suspenders.
-- **Alternative resolver URLs.** The GitHub API is hardcoded. If GitHub's
-  rate limits become a real problem, we add a config option to point at a
-  different resolver (nixos.org, a proxy, etc.).
+- **sha256 verification.** Trust Nix's own narinfo verification.
+- **Custom resolver URLs.** channels.nixos.org is hardcoded. Custom nixpkgs
+  forks (not on the official channel infrastructure) can only use the Pinned
+  tier for now.
 - **Binary cache / pre-built closures.** Hosts still evaluate and build.

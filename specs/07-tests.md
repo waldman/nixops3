@@ -243,7 +243,7 @@ Input: no pin block. Config: `require_pin = true`.
 Expected: error, cycle fails.
 
 **6b.3 Floating tier — channel resolves to rev**
-Input: `pin.nixpkgs = {channel: "nixos-25.05"}`. Mock GitHub API returns sha `abc1234...`.
+Input: `pin.nixpkgs = {channel: "nixos-25.05"}`. Mock channel resolver (channels.nixos.org/git-revision) returns sha `abc1234...`.
 Expected: `PinResolution::Floating { channel, rev = "abc1234..." }`. One HTTP call.
 
 **6b.4 Floating tier — cached resolution**
@@ -263,44 +263,32 @@ Input: rev is not 40 hex chars.
 Expected: parse error (caught at YAML parse, spec 6.6).
 
 **6b.8 Channel resolution HTTP failure**
-Setup: mock GitHub API returns 500.
+Setup: mock resolver returns network error.
 Expected: error, cycle fails.
 
 **6b.9 Channel resolution 404**
-Setup: mock GitHub API returns 404 (channel doesn't exist).
+Setup: mock resolver returns 404 (channel not published to channels.nixos.org).
 Expected: error naming the channel, cycle fails.
 
 ---
 
-### 6c. nixpkgs Cache (`src/nixpkgs.rs`)
+### 6c. nixpkgs URL construction (`src/pin.rs`)
 
-**6c.1 ensures rev is materialized**
-Input: rev not in cache. Mock HTTPS returns tarball bytes.
-Expected: `/var/lib/nixops3/nixpkgs/<rev>/` exists and contains the extracted content (root-level `default.nix`, etc.).
+The daemon no longer manages a local nixpkgs cache — Nix handles fetching,
+extraction, and store retention. All the daemon does is construct the URL
+passed to `nixos-rebuild` via `-I nixpkgs=`.
 
-**6c.2 no-op when already cached**
-Input: `/var/lib/nixops3/nixpkgs/<rev>/` already exists.
-Expected: no HTTPS call.
+**6c.1 Pinned tier → GitHub archive URL**
+Input: `pin.nixpkgs = {channel: "nixos-25.05", rev: "abc1234..."}`.
+Expected: `nixpkgs_arg(&pin_res) == "https://github.com/NixOS/nixpkgs/archive/abc1234....tar.gz"`.
 
-**6c.3 extraction is to tmp then renamed**
-Setup: mock HTTPS observes filesystem mid-extract.
-Expected: files land in `nixpkgs/.tmp-<rev>-<pid>/`, then renamed to `nixpkgs/<rev>/`.
+**6c.2 Floating tier → same URL shape with resolved rev**
+Input: Floating resolves to `def5678...`.
+Expected: URL substitutes the resolved rev.
 
-**6c.4 tar strip-components handling**
-Input: tarball's root entry is `nixpkgs-abc1234/default.nix` (GitHub archive convention).
-Expected: extracted `default.nix` sits at `/var/lib/nixops3/nixpkgs/<rev>/default.nix` (wrapper dir stripped).
-
-**6c.5 partial extraction leaves no `nixpkgs/<rev>/`**
-Setup: mock HTTPS truncates mid-tarball.
-Expected: `nixpkgs/<rev>/` does not exist; `nixpkgs/.tmp-<rev>-*` may remain (cleaned next cycle).
-
-**6c.6 LRU prune keeps N most recent**
-Setup: 5 nixpkgs entries; `nixpkgs_retain = 3`.
-Expected: 3 remain (newest by mtime).
-
-**6c.7 LRU prune never removes in-use rev**
-Setup: 5 entries; `nixpkgs_retain = 3`; in-use rev is the oldest.
-Expected: in-use rev preserved; 3 newest kept; total 4 remaining.
+**6c.3 Loose tier → local path from find_nixpkgs()**
+Input: no pin.
+Expected: `nixpkgs_arg` is whatever `find_nixpkgs()` returned (existing v0.3 behavior).
 
 ---
 
@@ -497,12 +485,12 @@ Expected: apply succeeds via channel discovery; `pin_mode=loose`, `nixpkgs_chann
 Setup: same as 13.1 but `require_pin = true`.
 Expected: cycle fails; `status=failed`; error mentions missing pin.
 
-**13.3 Floating tier — resolves via mock GitHub API**
-Setup: `main.yaml` has `pin.nixpkgs.channel: nixos-25.05` (no rev). Mock HTTP resolver returns sha `abc1234...` for that channel. Mock nixpkgs tarball provided.
+**13.3 Floating tier — resolves + passes URL to nix**
+Setup: `main.yaml` has `pin.nixpkgs.channel: nixos-25.05` (no rev). Mock channel resolver returns sha `abc1234...`.
 Expected:
 - Resolver called once with the channel
-- Tarball downloaded, extracted to `/var/lib/nixops3/nixpkgs/abc1234.../`
-- `nixos-rebuild` invoked with `-I nixpkgs=/var/lib/nixops3/nixpkgs/abc1234.../`
+- `nixos-rebuild` invoked with `-I nixpkgs=https://github.com/NixOS/nixpkgs/archive/abc1234...tar.gz`
+- **No local nixpkgs cache dir created by the daemon** — Nix owns the download
 - Heartbeat: `pin_mode=floating`, `nixpkgs_channel=nixos-25.05`, `nixpkgs_rev=abc1234...`
 
 **13.4 Floating tier — require_explicit_rev blocks**
@@ -511,11 +499,8 @@ Expected: cycle fails; error mentions missing rev.
 
 **13.5 Pinned tier — no resolver call**
 Setup: `main.yaml` has both `channel` and `rev`.
-Expected: mock resolver NOT called; tarball downloaded from the pinned rev's URL; heartbeat carries `pin_mode=pinned`.
-
-**13.6 Pinned tier — cache hit skips download**
-Setup: `main.yaml` has `channel + rev`. `/var/lib/nixops3/nixpkgs/<rev>/` already exists.
-Expected: no HTTPS call for nixpkgs; apply proceeds using the cached tree.
+Expected: mock resolver NOT called; `nixos-rebuild` invoked with
+`-I nixpkgs=https://github.com/NixOS/nixpkgs/archive/<rev>.tar.gz`; heartbeat carries `pin_mode=pinned`.
 
 **13.7 Merge — host `main.yaml` overrides role's pin**
 Setup: role `main.yaml` pins `nixos-25.05, rev=X`; host `main.yaml` pins `nixos-25.11` (no rev).

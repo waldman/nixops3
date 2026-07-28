@@ -255,10 +255,10 @@ async fn test_12_12_secrets_host_wins() {
 
 #[tokio::test]
 async fn test_12_13_inventory_json_written() {
-    let queries_toml = r#"
-[[query]]
-name        = "zk_nodes"
-role_prefix = "home/production/zookeeper"
+    let main_yaml = r#"
+queries:
+  zk_nodes:
+    role_prefix: home/production/zookeeper
 "#;
 
     let zk_item = InventoryItem {
@@ -269,7 +269,7 @@ role_prefix = "home/production/zookeeper"
     };
 
     let ctx = baseline(TestContext::builder().inventory_enabled())
-        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/queries.toml"), queries_toml)
+        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/main.yaml"), main_yaml)
         .inventory_items(vec![zk_item])
         .build();
 
@@ -314,4 +314,135 @@ async fn test_12_14_nix_path_resolution() {
         )),
         "-I nixos-config= must be passed explicitly; got: {joined}"
     );
+}
+
+// ─── 13. Pin tiers end-to-end (spec 09) ─────────────────────────────────────
+
+const RESOLVED_REV: &str = "1111111111111111111111111111111111111111";
+const EXPLICIT_REV: &str = "2222222222222222222222222222222222222222";
+
+fn nixpkgs_url(rev: &str) -> String {
+    format!("nixpkgs=https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz")
+}
+
+/// 13.1 Loose tier — no main.yaml → falls back to channel discovery,
+/// heartbeat records pin_mode=loose with empty channel/rev.
+#[tokio::test]
+async fn test_13_1_loose_tier() {
+    let ctx = baseline(TestContext::builder().inventory_enabled()).build();
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert_eq!(*ctx.resolver.calls.lock().unwrap(), 0);
+    let calls = ctx.dynamo.calls.lock().unwrap();
+    let last = calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "loose");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), "");
+}
+
+/// 13.3 Floating tier — channel-only pin → resolver called, URL passed to nix,
+/// heartbeat carries resolved rev.
+#[tokio::test]
+async fn test_13_3_floating_tier() {
+    let main_yaml = r#"
+pin:
+  nixpkgs:
+    channel: nixos-25.05
+"#;
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/main.yaml"), main_yaml)
+        .resolver_rev(RESOLVED_REV)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert_eq!(*ctx.resolver.calls.lock().unwrap(), 1);
+
+    let calls = ctx.executor.calls.lock().unwrap();
+    let rebuild = calls.iter().find(|c| c[0] == "nixos-rebuild").unwrap();
+    assert!(
+        rebuild.iter().any(|a| a == &nixpkgs_url(RESOLVED_REV)),
+        "expected `-I {}` in {:?}", nixpkgs_url(RESOLVED_REV), rebuild
+    );
+
+    let dyn_calls = ctx.dynamo.calls.lock().unwrap();
+    let last = dyn_calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "floating");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "nixos-25.05");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), RESOLVED_REV);
+}
+
+/// 13.5 Pinned tier — both channel + rev → resolver NOT called, URL uses rev.
+#[tokio::test]
+async fn test_13_5_pinned_tier() {
+    let main_yaml = format!(
+        r#"
+pin:
+  nixpkgs:
+    channel: nixos-25.05
+    rev: {EXPLICIT_REV}
+"#
+    );
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/main.yaml"), main_yaml)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert_eq!(
+        *ctx.resolver.calls.lock().unwrap(),
+        0,
+        "resolver must not be called for Pinned tier"
+    );
+
+    let calls = ctx.executor.calls.lock().unwrap();
+    let rebuild = calls.iter().find(|c| c[0] == "nixos-rebuild").unwrap();
+    assert!(
+        rebuild.iter().any(|a| a == &nixpkgs_url(EXPLICIT_REV)),
+        "expected `-I {}` in {:?}", nixpkgs_url(EXPLICIT_REV), rebuild
+    );
+
+    let dyn_calls = ctx.dynamo.calls.lock().unwrap();
+    let last = dyn_calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "pinned");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "nixos-25.05");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), EXPLICIT_REV);
+}
+
+/// 13.7 Merge — host main.yaml overrides role's pin wholesale (no rev inheritance).
+#[tokio::test]
+async fn test_13_7_host_pin_replaces_role() {
+    let role_yaml = format!(
+        "pin:\n  nixpkgs:\n    channel: nixos-25.05\n    rev: {EXPLICIT_REV}\n"
+    );
+    let host_yaml = "pin:\n  nixpkgs:\n    channel: nixos-25.11\n";
+
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/main.yaml"), role_yaml)
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/{TEST_HOST}/main.yaml"),
+            host_yaml,
+        )
+        .resolver_rev(RESOLVED_REV)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    // Host declared channel-only → Floating, resolver called, rev = RESOLVED_REV,
+    // not EXPLICIT_REV (role's rev is NOT inherited).
+    assert_eq!(*ctx.resolver.calls.lock().unwrap(), 1);
+    let dyn_calls = ctx.dynamo.calls.lock().unwrap();
+    let last = dyn_calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "floating");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "nixos-25.11");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), RESOLVED_REV);
+}
+
+// Helper — extract a string field from a DynamoDB item map
+fn dyn_str(item: &std::collections::HashMap<String, nixops3d::types::DynVal>, key: &str) -> String {
+    match item.get(key) {
+        Some(nixops3d::types::DynVal::S(s)) => s.clone(),
+        _ => String::new(),
+    }
 }

@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use nixops3d::config::Config;
 use nixops3d::daemon::run_cycle;
+use nixops3d::pin::ChannelResolver;
 use nixops3d::traits::{DynamoOps, Executor, S3Ops, SecretsOps};
 use nixops3d::types::{CycleOutcome, DynVal, InventoryItem};
 use std::collections::HashMap;
@@ -118,9 +119,34 @@ pub struct TestContext {
     pub dynamo: Arc<MockDynamo>,
     pub secrets: Arc<MockSecrets>,
     pub executor: Arc<MockExecutor>,
+    pub resolver: Arc<StubResolver>,
     pub var_dir: TempDir,
     pub nixos_dir: TempDir,
     pub secrets_dir: TempDir,
+}
+
+/// Test resolver: returns a fixed rev, records call count.
+pub struct StubResolver {
+    pub rev: String,
+    pub calls: Mutex<usize>,
+    pub fail: bool,
+}
+
+impl StubResolver {
+    pub fn new(rev: impl Into<String>) -> Self {
+        Self { rev: rev.into(), calls: Mutex::new(0), fail: false }
+    }
+}
+
+#[async_trait]
+impl ChannelResolver for StubResolver {
+    async fn resolve(&self, _channel: &str) -> Result<String> {
+        *self.calls.lock().unwrap() += 1;
+        if self.fail {
+            anyhow::bail!("stub resolver failure");
+        }
+        Ok(self.rev.clone())
+    }
 }
 
 impl TestContext {
@@ -136,6 +162,7 @@ impl TestContext {
         if !hw.exists() {
             std::fs::write(&hw, "{ }").unwrap();
         }
+        let resolver = self.resolver.clone();
         run_cycle(
             &self.config,
             &self.hostname,
@@ -143,6 +170,7 @@ impl TestContext {
             Some(self.dynamo.as_ref()),
             self.secrets.as_ref(),
             self.executor.as_ref(),
+            &*resolver,
             self.var_dir.path(),
             &current_path,
             self.nixos_dir.path(),
@@ -220,6 +248,7 @@ pub struct TestContextBuilder {
     inventory_items: Vec<InventoryItem>,
     hostname: String,
     s3_get_error: bool,
+    resolver_rev: Option<String>,
 }
 
 impl TestContextBuilder {
@@ -290,6 +319,12 @@ impl TestContextBuilder {
         self
     }
 
+    #[allow(dead_code)]
+    pub fn resolver_rev(mut self, rev: impl Into<String>) -> Self {
+        self.resolver_rev = Some(rev.into());
+        self
+    }
+
     pub fn build(mut self) -> TestContext {
         let hostname = if self.hostname.is_empty() {
             TEST_HOST.to_string()
@@ -354,6 +389,8 @@ poll_interval_secs = 600
             .unwrap();
         }
 
+        let resolver = Arc::new(StubResolver::new(self.resolver_rev.unwrap_or_else(|| TEST_SHA.to_string())));
+
         TestContext {
             config,
             hostname,
@@ -361,6 +398,7 @@ poll_interval_secs = 600
             dynamo,
             secrets,
             executor,
+            resolver,
             var_dir,
             nixos_dir,
             secrets_dir,

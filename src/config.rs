@@ -10,6 +10,31 @@ struct RawConfig {
     trees_retain: Option<usize>,
     aws: Option<AwsCredentials>,
     inventory: Option<InventoryConfig>,
+    pins: Option<RawPinsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawPinsConfig {
+    pub require_pin: Option<bool>,
+    pub require_explicit_rev: Option<bool>,
+    pub channel_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PinsConfig {
+    pub require_pin: bool,
+    pub require_explicit_rev: bool,
+    pub channel_ttl_secs: u64,
+}
+
+impl Default for PinsConfig {
+    fn default() -> Self {
+        Self {
+            require_pin: false,
+            require_explicit_rev: false,
+            channel_ttl_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,6 +59,7 @@ pub struct Config {
     pub trees_retain: usize,
     pub aws: Option<AwsCredentials>,
     pub inventory: ResolvedInventory,
+    pub pins: PinsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +95,16 @@ impl Config {
             }
         };
 
+        let pins = raw.pins.map(|p| PinsConfig {
+            require_pin: p.require_pin.unwrap_or(false),
+            require_explicit_rev: p.require_explicit_rev.unwrap_or(false),
+            channel_ttl_secs: p.channel_ttl_secs.unwrap_or(300),
+        }).unwrap_or_default();
+
+        if pins.channel_ttl_secs == 0 {
+            return Err(anyhow!("pins.channel_ttl_secs must be > 0"));
+        }
+
         Ok(Config {
             bucket: raw.bucket,
             region: raw.region,
@@ -77,6 +113,7 @@ impl Config {
             trees_retain,
             aws: raw.aws,
             inventory,
+            pins,
         })
     }
 

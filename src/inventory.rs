@@ -51,11 +51,25 @@ pub fn write_inventory(queries_result: &HashMap<String, Value>, path: &Path) -> 
     Ok(())
 }
 
+/// Additional heartbeat metadata about the pin used this cycle.
+pub struct PinInfo<'a> {
+    pub mode: &'a str,
+    pub channel: &'a str,
+    pub rev: &'a str,
+}
+
+impl<'a> PinInfo<'a> {
+    pub fn none() -> Self {
+        Self { mode: "loose", channel: "", rev: "" }
+    }
+}
+
 /// Writes a heartbeat item to DynamoDB.
 ///
 /// `applied_sha` is the current symlink target basename (empty string if the
 /// symlink doesn't yet exist). `target_sha` is what the daemon resolved from
 /// `s3://<bucket>/current` this cycle (empty string if the resolve failed).
+/// `pin` describes the pin decision made this cycle.
 pub async fn write_heartbeat(
     config: &Config,
     hostname: &str,
@@ -63,6 +77,7 @@ pub async fn write_heartbeat(
     status: LastRunStatus,
     applied_sha: &str,
     target_sha: &str,
+    pin: PinInfo<'_>,
     executor: &dyn Executor,
 ) {
     let dynamo = match dynamo {
@@ -99,6 +114,9 @@ pub async fn write_heartbeat(
     item.insert("network".into(), DynVal::S(network));
     item.insert("applied_sha".into(), DynVal::S(applied_sha.to_string()));
     item.insert("target_sha".into(), DynVal::S(target_sha.to_string()));
+    item.insert("pin_mode".into(), DynVal::S(pin.mode.to_string()));
+    item.insert("nixpkgs_channel".into(), DynVal::S(pin.channel.to_string()));
+    item.insert("nixpkgs_rev".into(), DynVal::S(pin.rev.to_string()));
     item.insert("last_run_status".into(), DynVal::S(status.as_str().to_string()));
     item.insert("last_seen".into(), DynVal::S(last_seen));
     item.insert("ttl".into(), DynVal::N(ttl.to_string()));

@@ -11,6 +11,7 @@ use nixops3d::aws::{AwsDynamoClient, AwsS3Client, AwsSecretsClient};
 use nixops3d::config::Config;
 use nixops3d::daemon::run_cycle;
 use nixops3d::executor::ProcessExecutor;
+use nixops3d::pin::{CachedResolver, NixosChannelResolver};
 use nixops3d::timer::sleep_duration;
 use nixops3d::types::CycleOutcome;
 
@@ -91,8 +92,13 @@ async fn run_bootstrap(args: &[String]) -> Result<()> {
     let nixos_dir   = Path::new(NIXOS_DIR);
     let secrets_dir = Path::new(SECRETS_DIR);
 
+    let resolver = CachedResolver::new(
+        NixosChannelResolver::new(),
+        std::time::Duration::from_secs(config.pins.channel_ttl_secs),
+    );
     run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
-              &executor, var_dir, current, nixos_dir, secrets_dir).await;
+              &executor, &resolver,
+              var_dir, current, nixos_dir, secrets_dir).await;
 
     info!("bootstrap complete — nixops3 service will take over");
     Ok(())
@@ -166,8 +172,13 @@ async fn run_oneshot() -> Result<()> {
     let dynamo: Option<&dyn nixops3d::traits::DynamoOps> =
         if config.inventory.enabled { Some(&dynamo_client) } else { None };
 
+    let resolver = CachedResolver::new(
+        NixosChannelResolver::new(),
+        std::time::Duration::from_secs(config.pins.channel_ttl_secs),
+    );
     let outcome = run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
-                            &executor, var_dir, current, nixos_dir, secrets_dir).await;
+                            &executor, &resolver,
+                            var_dir, current, nixos_dir, secrets_dir).await;
 
     match outcome {
         CycleOutcome::Applied | CycleOutcome::NoOp | CycleOutcome::CanarySkip => Ok(()),
@@ -195,6 +206,11 @@ async fn run_daemon() -> Result<()> {
     let dynamo: Option<&dyn nixops3d::traits::DynamoOps> =
         if config.inventory.enabled { Some(&dynamo_client) } else { None };
 
+    let resolver = CachedResolver::new(
+        NixosChannelResolver::new(),
+        std::time::Duration::from_secs(config.pins.channel_ttl_secs),
+    );
+
     let mut first_boot = !current.exists();
 
     loop {
@@ -211,7 +227,8 @@ async fn run_daemon() -> Result<()> {
         };
 
         run_cycle(&cycle_config, &hostname, &s3, dynamo, &secrets_client,
-                  &executor, var_dir, current, nixos_dir, secrets_dir).await;
+                  &executor, &resolver,
+                  var_dir, current, nixos_dir, secrets_dir).await;
     }
 }
 

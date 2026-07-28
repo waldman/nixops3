@@ -126,8 +126,11 @@ loop:
   # 8. Generate configuration.nix at the default NixOS location
   write("/etc/nixos/configuration.nix", generate_config(target))
 
-  # 9. Rebuild — no -I nixos-config= needed (default location)
+  # 9. Rebuild — pass -I nixos-config= explicitly because systemd strips
+  # NIX_PATH; the /etc/nixos location still helps for manual debugging
+  # from an interactive shell (where NIX_PATH is set).
   result = exec("nixos-rebuild switch \
+    -I nixos-config=/etc/nixos/configuration.nix \
     -I nixops3=/var/lib/nixops3/commits/<target> \
     [-I nixpkgs=<discovered path>]")
 
@@ -190,10 +193,12 @@ trees.
 ## configuration.nix Generation
 
 Written per cycle to `/etc/nixos/configuration.nix` — the standard NixOS
-location. This means `nixos-rebuild` finds it without `-I nixos-config=`, and
-a manual `sudo nixos-rebuild switch` for debugging Just Works (with the
-one caveat that `<nixops3/...>` imports need `-I nixops3=/var/lib/nixops3/current`
-on the command line).
+location. The daemon still passes `-I nixos-config=` explicitly (systemd
+strips `NIX_PATH`, without which `nixos-rebuild` can't find the "default"
+location). The standard location helps manual debugging from an interactive
+shell: `sudo nixos-rebuild switch -I nixops3=/var/lib/nixops3/current` Just
+Works because interactive shells have `NIX_PATH` set with `nixos-config=`
+pointing at `/etc/nixos/configuration.nix`.
 
 The daemon overwrites this file every cycle. On a nixops3-managed host,
 `/etc/nixos/configuration.nix` is not user-editable — S3 is the source of
@@ -233,12 +238,16 @@ daemon does not emit profile imports itself.
 
 ```sh
 nixos-rebuild switch \
+  -I nixos-config=/etc/nixos/configuration.nix \
   -I nixops3=/var/lib/nixops3/commits/<sha> \
   -I nixpkgs=<discovered path>          # optional; see nixpkgs discovery below
 ```
 
-No `-I nixos-config=` — the generated file at `/etc/nixos/configuration.nix`
-is the default location `nixos-rebuild` reads.
+`-I nixos-config=` is passed explicitly because systemd strips `NIX_PATH`.
+Without it, `nixos-rebuild` fails with `file 'nixos-config' was not found in
+the Nix search path`. The file lives at the standard `/etc/nixos/` location so
+manual debugging from an interactive shell (where `NIX_PATH` is populated)
+Just Works without needing to know the path.
 
 `-I nixops3=` registers the extracted commit tree as a Nix path, resolving
 role imports like `<nixops3/profiles/base.nix>`.

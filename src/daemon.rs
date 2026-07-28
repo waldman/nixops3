@@ -147,9 +147,16 @@ pub async fn run_cycle(
         return CycleOutcome::S3Error;
     }
 
-    // Step 9: Run nixos-rebuild — no -I nixos-config= (default location used)
+    // Step 9: Run nixos-rebuild. We write configuration.nix to the standard
+    // NixOS location AND pass it explicitly via -I nixos-config=. The explicit
+    // flag is required because systemd strips NIX_PATH — without it,
+    // nixos-rebuild fails with "file 'nixos-config' was not found in the Nix
+    // search path". The standard location still helps manual debugging: a
+    // user can `sudo nixos-rebuild switch` from a shell (where NIX_PATH is
+    // set) without knowing the file location.
+    let nixos_config_arg = format!("nixos-config={}", nixos_config_path.display());
     let nixops3_arg = format!("nixops3={}", tree_dir.display());
-    let mut args: Vec<&str> = vec!["switch", "-I", &nixops3_arg];
+    let mut args: Vec<&str> = vec!["switch", "-I", &nixos_config_arg, "-I", &nixops3_arg];
     let nixpkgs_arg;
     if let Some(nixpkgs) = find_nixpkgs() {
         nixpkgs_arg = format!("nixpkgs={nixpkgs}");

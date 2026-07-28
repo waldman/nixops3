@@ -305,9 +305,13 @@ async fn test_12_14_nix_path_resolution() {
         )),
         "-I nixops3= should point at the local commit tree; got: {joined}"
     );
-    // Should NOT contain -I nixos-config= (default location used)
+    // Must contain -I nixos-config= pointing at the generated file.
+    // Required because systemd strips NIX_PATH (see daemon.rs step 9 comment).
     assert!(
-        !joined.contains("nixos-config="),
-        "should not pass -I nixos-config= (default location used)"
+        joined.contains(&format!(
+            "nixos-config={}",
+            ctx.nixos_dir.path().join("configuration.nix").display()
+        )),
+        "-I nixos-config= must be passed explicitly; got: {joined}"
     );
 }

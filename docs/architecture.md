@@ -73,7 +73,7 @@ Each poll cycle follows this sequence:
    `main.nix`, and the host's `main.nix` (if present) from the extracted
    commit tree.
 
-9. **Rebuild** — `nixos-rebuild switch -I nixops3=/var/lib/nixops3/commits/<target> [-I nixpkgs=...]`.
+9. **Rebuild** — `nixos-rebuild switch -I nixos-config=/etc/nixos/configuration.nix -I nixops3=/var/lib/nixops3/commits/<target> [-I nixpkgs=...]`. The `-I nixos-config=` is passed explicitly because systemd strips `NIX_PATH`.
 
 10. **Advance symlink** — on success only, atomically repoint
     `/var/lib/nixops3/current` at `commits/<target>` via

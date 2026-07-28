@@ -2,29 +2,36 @@
 
 ## Overview
 
-NixOpS3 is built around one insight: S3 is an excellent configuration control plane. It is versioned, highly available, cheaply scalable to any fleet size, and already part of most infrastructure stacks.
+NixOpS3 is built around one insight: S3 is an excellent configuration control
+plane. It is versioned, highly available, cheaply scalable to any fleet size,
+and already part of most infrastructure stacks.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Git repository (source of truth)                             │
-│  profiles/  roles/  canary.txt                               │
+│  profiles/  roles/                                            │
 └──────────────────────┬───────────────────────────────────────┘
-                       │  CI/CD: aws s3 sync on merge to main
+                       │  CI/CD on merge:
+                       │    1. aws s3 sync . commits/<sha>/
+                       │    2. aws s3 cp - current    (with <sha>)
                        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  S3 Bucket  (s3://nixops3-<name>/)                           │
-│  profiles/  roles/  canary.txt                               │
+│    current                     (sha pointer)                  │
+│    commits/<sha>/              (immutable per-commit tree)   │
+│      profiles/  roles/                                        │
 └──────────────────────┬───────────────────────────────────────┘
                        │  HTTP GET — poll every N seconds + jitter
                        ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  nixops3d  (daemon, runs as root on each machine)            │
+│  nixops3 --daemon  (runs as root on each machine)             │
 │                                                              │
-│  /etc/nixops3/nixops3.toml        (config)                   │
-│  /var/lib/nixops3/current/        (downloaded .nix files)    │
-│  /run/nixops3/last-hash           (tmpfs — resets on reboot) │
-│  /run/nixops3/secrets/            (tmpfs — resets on reboot) │
-│  /var/lib/nixops3/inventory.json  (query results)            │
+│  /etc/nixops3/nixops3.toml            (config)                │
+│  /var/lib/nixops3/commits/<sha>/      (downloaded trees)      │
+│  /var/lib/nixops3/current             (symlink → last apply)  │
+│  /etc/nixos/configuration.nix         (generated per cycle)   │
+│  /run/nixops3/secrets/                (tmpfs — resets)        │
+│  /var/lib/nixops3/inventory.json      (query results)         │
 └──────┬───────────────────────────────┬───────────────────────┘
        │                               │
        ▼                               ▼
@@ -37,59 +44,113 @@ nixos-rebuild switch           AWS services (optional)
 
 Each poll cycle follows this sequence:
 
-1. **Canary check** — fetch `canary.txt` from S3. If present and this machine's hostname is not listed, skip the cycle and write `status: canary_skip` to inventory.
+1. **Resolve target** — GET `s3://<bucket>/current`. Validate the value is a
+   40-character hex sha; on failure log and skip the cycle.
 
-2. **Download** (two passes):
-   - Fetch `roles/<role>/main.nix` and (if present) the host `main.nix`.
-   - Scan both for `<nixops3/...>` import references.
-   - Fetch exactly those profile files — nothing more.
-   - Fetch `queries.toml` files for inventory queries.
+2. **No-op check** — if `readlink /var/lib/nixops3/current` already resolves
+   to `commits/<target>`, write heartbeat and continue. No further fetches.
 
-3. **Hash check** — compute SHA-256 of all downloaded `.nix` files sorted by S3 key. Compare to `/run/nixops3/last-hash`. If identical, write heartbeat and sleep — no rebuild.
+3. **Canary gate** — GET `commits/<target>/roles/<role>/canary.txt`. If
+   present and this host's FQDN is not listed, write `status: canary_skip`
+   heartbeat and stop. If absent (404) or hostname listed, proceed.
 
-4. **Inventory queries** — if enabled, run DynamoDB queries defined in `queries.toml` and write `/var/lib/nixops3/inventory.json`.
+4. **Fetch tree** — list all objects under `commits/<target>/` and download
+   them in parallel into `/var/lib/nixops3/commits/<target>/`. Extraction is
+   to a `.tmp-*` dir first, then renamed on completion.
 
-5. **Secrets** — list and fetch secrets from AWS Secrets Manager; write to `/run/nixops3/secrets/`.
+5. **Hardware config** — if `/etc/nixos/hardware-configuration.nix` is
+   missing, run `nixos-generate-config`.
 
-6. **Generate `configuration.nix`** — write `/var/lib/nixops3/current/configuration.nix` with three imports: hardware config, role main.nix, host main.nix.
+6. **Inventory queries** — if enabled, run DynamoDB queries defined in
+   `queries.toml` files inside the commit tree and write
+   `/var/lib/nixops3/inventory.json`.
 
-7. **Rebuild** — run `nixos-rebuild switch -I nixos-config=... -I nixops3=...`.
+7. **Secrets** — list and fetch from AWS Secrets Manager; write to
+   `/run/nixops3/secrets/`.
 
-8. **Outcome** — on success, write new hash and `status: ok` heartbeat. On failure, write `status: failed` heartbeat; next cycle retries.
+8. **Generate configuration.nix** — write `/etc/nixos/configuration.nix`
+   (the standard NixOS location) importing the hardware config, the role's
+   `main.nix`, and the host's `main.nix` (if present) from the extracted
+   commit tree.
+
+9. **Rebuild** — `nixos-rebuild switch -I nixops3=/var/lib/nixops3/commits/<target> [-I nixpkgs=...]`.
+
+10. **Advance symlink** — on success only, atomically repoint
+    `/var/lib/nixops3/current` at `commits/<target>` via
+    `symlink → rename`. On failure the symlink is untouched; the next cycle
+    will retry against the same target.
+
+11. **Heartbeat** — write DynamoDB item with `applied_sha` (symlink target)
+    and `target_sha` (resolved from `current`). Convergence is
+    `applied_sha == target_sha`.
 
 ## Design decisions
 
 ### Pull not push
 
-The daemon pulls on a timer. There is no inbound network connection to managed machines and no master that tracks state. Machines are independently correct; a machine that is powered off simply applies the accumulated changes when it comes back up.
+The daemon pulls on a timer. There is no inbound network connection to
+managed machines and no master that tracks state. A machine that is powered
+off simply applies the accumulated changes when it comes back up — it will
+converge to whatever `current` points at.
 
 ### S3 as the only shared state
 
-The only shared infrastructure is an S3 bucket (and optionally a DynamoDB table). There is no Puppet master, Salt master, or Ansible control node to operate, scale, or back up.
+The only shared infrastructure is an S3 bucket (and optionally a DynamoDB
+table). There is no Puppet master, Salt master, or Ansible control node to
+operate, scale, or back up.
 
-### Hash-based idempotency
+### Immutable-by-convention commit trees
 
-Every cycle computes a hash of the downloaded `.nix` files. A rebuild only happens when the hash changes. This makes polling cheap at steady state: just a few S3 GETs and a hash comparison.
+Each promoted config lives at `commits/<git-sha>/`, populated once by CI and
+treated as immutable thereafter. The only permitted mutation is the operator
+deleting a `canary.txt` file to promote past a canary gate (see canary.md).
 
-The hash covers only `.nix` files. `queries.toml` changes and secret rotations do not trigger a rebuild on their own.
+Fleet-wide state is a single object: `current`, a pointer to the currently-
+promoted sha. Rollback is one `aws s3 cp` command.
+
+### Symlink as state store
+
+`/var/lib/nixops3/current` is a symlink pointing at the commit tree of the
+last successful apply. `readlink` is the complete answer to "what is this
+box running". There is no state file, no last-hash — the symlink is the
+only truth.
+
+Symlink replacement is atomic via `rename(2)` on the same filesystem, so a
+concurrent reader either sees the old sha or the new sha, never a missing
+symlink.
 
 ### NixOS module system does the merging
 
-Profiles are standard NixOS modules. The daemon does no custom merging — it generates a `configuration.nix` with an `imports` list and hands off to `nixos-rebuild`. The NixOS module system handles merge semantics, conflict detection, and `lib.mkDefault`/`lib.mkForce` priorities.
+Profiles are standard NixOS modules. The daemon does no custom merging — it
+generates a `configuration.nix` with an `imports` list and hands off to
+`nixos-rebuild`. The NixOS module system handles merge semantics, conflict
+detection, and `lib.mkDefault`/`lib.mkForce` priorities.
+
+### No selective fetching
+
+The daemon downloads the entire `commits/<sha>/` tree, not just what a role
+imports. This is slightly more bandwidth in exchange for a much simpler
+daemon and the ability to inspect the whole config on any host (`ls
+/var/lib/nixops3/current/roles/`).
 
 ### Tmpfs for ephemeral state
 
-`/run/nixops3/` is on tmpfs. The last-applied hash and all secrets are cleared on every reboot. On first boot (no `last-hash`), the daemon applies immediately without sleeping. This is the correct behaviour for a newly provisioned machine.
+`/run/nixops3/` is on tmpfs. Secrets and the generated `configuration.nix`
+are cleared on every reboot. On first boot (no local symlink), the daemon
+applies immediately without sleeping.
 
 ## Relationship to Puppet concepts
 
 | Puppet | NixOpS3 |
 |--------|---------|
 | Puppet master | S3 bucket |
-| Puppet agent | `nixops3d` daemon |
+| Puppet agent | `nixops3` binary |
 | Module | NixOS module (from nixpkgs or custom) |
 | Profile | `.nix` file in `profiles/` |
 | Role | `roles/<path>/main.nix` |
+| Environment | prefix in the role path |
 | Hiera | S3 path hierarchy + `lib.mkDefault` |
 | PuppetDB `search()` | DynamoDB + `builtins.fromJSON` |
 | `puppet agent -t` | `nixos-rebuild switch` |
+| Deploying a change | `git push` → CI builds commit tree → flips `current` |
+| Rollback | one `aws s3 cp` to overwrite `current` |

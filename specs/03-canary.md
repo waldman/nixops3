@@ -2,64 +2,125 @@
 
 ## Purpose
 
-Canary allows a configuration change to be applied to a single designated node before rolling out to the full fleet. This enables human (or automated) validation before wide deployment.
+Canary allows a configuration change to be applied to a single designated
+host of a role before rolling out to the rest of that role. This enables
+human (or automated) validation before wide deployment.
 
-## canary.txt
+Canary in v0.3+ is **role-scoped**: gating one role does not affect other
+roles in the fleet. Canarying `webserver` does not hold back `generic_node`.
 
-**S3 key**: `canary.txt` at the bucket root.
+## The canary.txt file
+
+**Location**: inside the commit tree, at the role level:
+
+```
+commits/<sha>/roles/<abstraction>/<environment>/<role>/canary.txt
+```
 
 **Format**: plain text, one FQDN per line, Unix line endings.
 
 ```
-ada-01.waldman.internal
-ada-02.waldman.internal
+web-01.waldman.internal
+web-02.waldman.internal
 ```
 
 Blank lines and lines starting with `#` are ignored.
 
+**Source of truth**: the automation repo. Commit `canary.txt` in the role
+directory. CI syncs it into each new `commits/<sha>/` tree along with the
+rest of the config.
+
 ## Daemon Behaviour
 
-At the start of each poll cycle, before downloading any config files, the daemon checks for `canary.txt`:
+Each poll cycle, after resolving the target sha and before fetching the full
+commit tree, the daemon issues a single GET for:
 
-| canary.txt state | Hostname in file | Action |
-|-----------------|-----------------|--------|
-| Absent | — | Normal apply |
-| Present | Yes | Normal apply |
-| Present | No | Skip apply; log; write heartbeat with `status: canary_skip` |
+```
+s3://<bucket>/commits/<sha>/roles/<role>/canary.txt
+```
 
-The daemon resolves the local hostname from `/proc/sys/kernel/hostname` (see spec 02 — Hostname Resolution).
+| canary.txt state | Hostname listed? | Action |
+|-----------------|------------------|--------|
+| 404 (absent)    | —                | Proceed to fetch and apply |
+| Present         | Yes              | Proceed to fetch and apply |
+| Present         | No               | Heartbeat `canary_skip`, stop |
 
-When skipping, the daemon does NOT update `last-hash`. The skipped node will apply the config as soon as `canary.txt` is removed.
+When skipping, the daemon does not fetch the commit tree, does not rebuild,
+does not advance the symlink. The skipped host stays at whatever sha its
+symlink currently points to.
+
+Hostname matching is exact FQDN match — no partial matches, no globbing.
 
 ## Workflow
 
 ### Starting a canary rollout
 
-1. Commit config changes to git alongside a `canary.txt` listing the canary hostname(s).
-2. CI/CD merges and syncs to S3 (`aws s3 sync`), including `canary.txt`.
-3. Only the listed node(s) apply on their next poll cycle.
-4. Validate the canary node (logs, services, connectivity).
+1. In the automation repo, add or update `canary.txt` at
+   `roles/<abstraction>/<environment>/<role>/canary.txt` listing the canary
+   host(s) for that role.
+2. Commit and merge the PR containing your config changes.
+3. CI syncs the entire tree into `commits/<sha>/`, then flips `current`.
+4. Only the listed host(s) of that role apply the new commit. Other hosts of
+   the same role skip. Hosts of other roles apply normally — canary is
+   role-scoped.
+5. Validate the canary host (logs, services, connectivity).
 
 ### Promoting to full rollout
 
-Two options:
+Remove `canary.txt` from S3 for the current commit:
 
-**Option A — Git commit:**
-Commit the removal of `canary.txt`. CI/CD removes it from S3. All nodes apply on their next cycle.
+```bash
+sha=$(aws s3 cp s3://<bucket>/current -)
+aws s3 rm s3://<bucket>/commits/$sha/roles/<abstraction>/<environment>/<role>/canary.txt
+```
 
-**Option B — CI/CD task (no PR required):**
-Trigger a CI/CD job that runs `aws s3 rm s3://<bucket>/canary.txt`. Equally auditable via CI/CD run history; no additional PR overhead.
+On next poll, the remaining hosts of that role see 404 for canary.txt and
+apply the commit. The pointer (`current`) is not touched.
+
+**Note on the mutation:** this is the only operator-driven mutation permitted
+inside `commits/<sha>/`. It is atomic per S3 semantics (one object DELETE)
+and both states — present and absent — are valid operator intents.
 
 ### Rolling back
 
-Push a revert of the config change. CI/CD syncs. All nodes (including the canary) apply the reverted config on next cycle. `canary.txt` can remain or be removed — it does not affect rollback.
+Fleet-wide rollback: overwrite `current` with the previous sha.
 
-## Multi-node Canary
+```bash
+echo <old-sha> | aws s3 cp - s3://<bucket>/current
+```
 
-`canary.txt` may list multiple hostnames for staged rollouts across a subset of the fleet before full promotion.
+All hosts (including the canary) apply the previous commit on their next
+cycle. `canary.txt` presence in either the old or new commit does not affect
+rollback — the mechanism gates fresh applies, not the direction of movement.
+
+## Bypassing canary intentionally
+
+Two options:
+
+1. **Per-PR**: omit `canary.txt` from the automation repo when merging the
+   change. CI syncs no canary file; all hosts apply immediately.
+2. **Post-merge**: `aws s3 rm` the canary file immediately after CI publish,
+   before any canary validation.
+
+Option 1 is cleaner — the intent is visible in the PR diff.
+
+## Multi-host Canary
+
+`canary.txt` may list multiple FQDNs for staged rollouts across a subset of
+hosts before full promotion.
 
 ## What canary.txt Does NOT Do
 
-- It does not track which commit is being tested — that context lives in git.
-- It does not auto-promote — promotion is always a deliberate human or CI action.
-- It does not affect `nixos-rebuild` behaviour — it only controls whether `nixos-rebuild` is called at all.
+- It does not gate other roles. Each role's `canary.txt` is independent.
+- It does not track which commit is being tested — that context lives in
+  `current` and in the git history of the automation repo.
+- It does not auto-promote — promotion is always a deliberate operator or
+  CI action.
+- It does not affect `nixos-rebuild` behaviour — it only controls whether
+  the cycle proceeds past the gate check.
+
+## Interaction with the symlink
+
+A gated host's local symlink is unchanged during a `canary_skip` — it still
+points at whatever commit it last successfully applied. This is visible in
+inventory as `applied_sha ≠ target_sha`, with `last_run_status = canary_skip`.

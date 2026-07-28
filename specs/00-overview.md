@@ -11,6 +11,7 @@ S3 is the control plane. There is no master server.
 - **Pull-based**: machines fetch their config; no push, no master
 - **S3 as data bus**: versioned, highly available, infinitely scalable
 - **Path as data**: the S3 path encodes the machine's identity (`<abstraction>/<environment>/<role>`)
+- **Content-addressed by git sha**: every promoted config lives at `commits/<sha>/`, immutable-by-convention; fleet targets one via a single pointer
 - **NixOS module system does the merging**: no custom merge logic; Nix handles it
 - **Static binary**: the daemon is a single musl-linked Rust binary with no runtime dependencies
 - **Opt-in features**: inventory reporting and secrets are disabled by default
@@ -43,7 +44,7 @@ S3 is the control plane. There is no master server.
                  ▼
 ┌─────────────────────────────────────────────────────┐
 │  S3 Bucket  (s3://nixops3-<org>/)                   │
-│  profiles/ · roles/ · canary.txt                    │
+│  current · commits/<sha>/{profiles,roles}/          │
 └────────────────┬────────────────────────────────────┘
                  │ poll every N seconds + jitter
                  ▼
@@ -51,7 +52,8 @@ S3 is the control plane. There is no master server.
 │  nixops3   (daemon, runs as root on each machine)   │
 │  /etc/nixops3/nixops3.toml                          │
 │  /var/lib/nixops3/current/  (working dir)           │
-│  /run/nixops3/  (tmpfs: last-hash, secrets/)        │
+│  /var/lib/nixops3/current  (symlink → commits/<sha>)│
+│  /run/nixops3/  (tmpfs: build/, secrets/)           │
 └──────┬──────────────────────┬───────────────────────┘
        │                      │
        ▼                      ▼

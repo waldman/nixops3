@@ -19,12 +19,14 @@ The feature is opt-in. Disabling it has no effect on config apply behaviour.
 
 | Attribute | Type | Source | Example |
 |-----------|------|--------|---------|
-| `hostname` | S | `/proc/sys/kernel/hostname` | `ada-01.waldman.internal` |
+| `hostname` | S | `/proc/sys/kernel/hostname` | `web-01.waldman.internal` |
 | `machine_id` | S | `/etc/machine-id` | `a1b2c3d4...` |
-| `role` | S | `nixops3.toml` | `home/production/ada` |
+| `role` | S | `nixops3.toml` | `home/production/webserver` |
 | `iface` | S | primary network interface | `eth0` |
 | `ip` | S | IP of primary interface | `192.168.15.50` |
 | `network` | S | network/prefix (v1: always `"unknown"`) | `192.168.15.0/24` |
+| `applied_sha` | S | basename of `/var/lib/nixops3/current` symlink target; `""` if no symlink yet | `abc1234...` |
+| `target_sha` | S | value of `current` in S3 the daemon resolved this cycle | `abc1234...` |
 | `last_run_status` | S | `ok`, `failed`, `canary_skip` | `ok` |
 | `last_seen` | S | ISO 8601 UTC | `2026-07-26T21:00:00Z` |
 | `ttl` | N | Unix epoch | `1753570800` |
@@ -72,11 +74,33 @@ Each machine's IAM identity requires:
 
 Machines can only write their own item but can read all items.
 
+## Convergence Semantics
+
+With the commit-pointer model (see spec 01), each heartbeat carries both
+`applied_sha` (what the host actually ran) and `target_sha` (what the fleet
+pointer said the host should be running).
+
+| `applied_sha` vs `target_sha` | `last_run_status` | Meaning |
+|-------------------------------|-------------------|---------|
+| equal | `ok` | Converged — running the current fleet target |
+| not equal | `ok` | Lagging — successful apply in progress, may catch up next cycle; also seen for a host that was gated and later ungated but hasn't polled yet |
+| not equal | `failed` | Apply failed; symlink still on the previous sha; retry next cycle |
+| not equal | `canary_skip` | Canary gate is active on this role and this host is not listed |
+
+Downstream tooling can compute simple fleet health from a scan:
+
+- Converged hosts: `applied_sha == target_sha AND last_run_status == "ok"`
+- Lagging: `applied_sha != target_sha AND last_run_status IN ("ok", "canary_skip")`
+- Broken: `last_run_status == "failed"`
+
 ## Search Queries — queries.toml
 
 ### Definition
 
-Any profile, role, or host directory may include a `queries.toml` file defining DynamoDB queries to run before `nixos-rebuild`:
+Any role or host directory may include a `queries.toml` file defining
+DynamoDB queries to run before `nixos-rebuild`. The daemon reads all
+`queries.toml` files under `commits/<sha>/roles/<role>/` and
+`commits/<sha>/roles/<role>/<hostname>/`.
 
 ```toml
 [[query]]
@@ -93,7 +117,9 @@ role_prefix = "home/production/zookeeper"
 
 ### Query Merging
 
-The daemon collects all `queries.toml` files found during the config tree download (see spec 01). All `[[query]]` entries are merged into a single list. Duplicate `name` values take the last definition (most-specific wins: host > role > profile > global).
+All `[[query]]` entries from all discovered `queries.toml` files are merged
+into a single list. Duplicate `name` values take the last definition
+(most-specific wins: host > role).
 
 ### DynamoDB Query Execution
 
@@ -141,17 +167,19 @@ in {
 
 ## Heartbeat Timing
 
-The daemon writes to DynamoDB at the end of every poll cycle, regardless of whether a rebuild occurred:
+The daemon writes to DynamoDB at the end of every poll cycle, regardless of
+whether a rebuild occurred:
 
-| Scenario | `last_run_status` written |
-|----------|--------------------------|
-| Config unchanged (hash match) | `ok` |
-| Config applied successfully | `ok` |
-| Config apply failed | `failed` |
-| Canary skip | `canary_skip` |
-| S3 download failed | `failed` |
+| Scenario | `last_run_status` | `applied_sha` | `target_sha` |
+|----------|-------------------|---------------|--------------|
+| Symlink already at target sha (no-op) | `ok` | current symlink | resolved from `current` |
+| Apply succeeded, symlink advanced | `ok` | new sha (equals target) | resolved from `current` |
+| Apply failed | `failed` | unchanged (old sha) | resolved from `current` |
+| Canary skip | `canary_skip` | unchanged | resolved from `current` |
+| S3 pointer fetch failed | `failed` | unchanged | `""` |
 
-On any DynamoDB write failure: log the error to journald, continue. Inventory failure must never block config apply.
+On any DynamoDB write failure: log the error to journald, continue.
+Inventory failure must never block config apply.
 
 ## Detecting Dead Nodes
 

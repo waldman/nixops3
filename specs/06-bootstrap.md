@@ -49,16 +49,18 @@ For v1: role is hardcoded in the ISO. One ISO per role is acceptable at small fl
 
 ## First Boot Sequence
 
-1. Systemd starts `nixops3.service`
+1. Systemd starts `nixops3.service` (ExecStart is `nixops3 --daemon`)
 2. `nixops3` reads `/etc/nixops3/nixops3.toml`
-3. No `last-hash` exists → apply immediately (no initial sleep)
-4. Downloads config tree from S3
-5. Fetches secrets from AWS Secrets Manager
-6. If `/etc/nixos/hardware-configuration.nix` is absent, runs `nixos-generate-config` to create it
-7. Generates `/var/lib/nixops3/current/configuration.nix`
-8. Runs `nixos-rebuild switch`
-9. On success: writes `last-hash`, writes DynamoDB heartbeat
-10. Enters normal poll loop
+3. No `/var/lib/nixops3/current` symlink exists → apply immediately (no initial sleep)
+4. GET `s3://<bucket>/current` → target sha
+5. GET `commits/<sha>/roles/<role>/canary.txt` — 404 or hostname listed → proceed; else skip
+6. List and parallel-fetch every object under `commits/<sha>/` → written to `/var/lib/nixops3/commits/<sha>/`
+7. Fetch secrets from AWS Secrets Manager to `/run/nixops3/secrets/`
+8. If `/etc/nixos/hardware-configuration.nix` is absent, run `nixos-generate-config`
+9. Write `/etc/nixos/configuration.nix` (standard NixOS location — no `-I nixos-config` needed)
+10. Run `nixos-rebuild switch -I nixops3=/var/lib/nixops3/commits/<sha> [-I nixpkgs=...]`
+11. On success: atomically advance the `/var/lib/nixops3/current` symlink; write DynamoDB heartbeat
+12. Enter normal poll loop
 
 ## Cloud-init (VM Deployments)
 

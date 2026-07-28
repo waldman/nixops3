@@ -4,26 +4,70 @@
 
 ```
 s3://<bucket>/
-  profiles/                         # profile library — shared NixOS modules
-    base.nix
-    docker.nix
-    hermes.nix
-
-  roles/
-    <abstraction>/                  # free-form label: "home", "aws-us-east-1", "datacenter-A"
-      profiles/                     # abstraction-scoped profiles
-        <profile>.nix
-      <environment>/                # "production", "staging", "dev"
-        profiles/                   # environment-scoped profiles
-          <profile>.nix
-        <role>/                     # role name: "ada", "zookeeper", "miner"
-          main.nix                  # role entry point — imports profiles, sets options
-          queries.toml              # optional: inventory queries for this role
-          <fqdn>/                   # hostname: "ada-01.waldman.internal"
-            main.nix                # host-specific overrides
-
-  canary.txt                        # optional: controls staged rollout (see spec 03)
+  current                                     # sha pointer to the promoted commit
+  commits/<sha>/                              # per-commit tree, published once by CI
+    profiles/
+      base.nix
+      nixops3.nix
+      users.nix
+    roles/
+      <abstraction>/                          # free-form: "home", "aws-us-east-1"
+        <environment>/                        # "production", "staging"
+          <role>/                             # "webserver", "generic_node"
+            main.nix                          # role entry point
+            canary.txt                        # optional; role-scoped gate (spec 03)
+            <fqdn>/                           # optional host directory
+              main.nix                        # host-specific overrides
 ```
+
+Only two things live at the bucket root: the mutable `current` pointer and
+the `commits/` prefix containing one immutable-by-convention tree per git
+commit. No other objects, no other prefixes.
+
+## Objects
+
+### `current`
+
+Plain text file containing the git sha of the promoted commit.
+
+- Exactly 40 hex characters (SHA-1 git sha), optionally followed by whitespace
+- Trailing newline permitted; anything else that isn't hex is rejected
+- This is the ONLY object that gets overwritten during normal operation
+- Rollback: `echo <old-sha> | aws s3 cp - s3://<bucket>/current`
+
+### `commits/<sha>/`
+
+A per-commit tree. `<sha>` is the git sha of the config repository commit
+CI built from — human-readable, greppable, `git show`-able.
+
+**Immutability contract:**
+
+- CI populates `commits/<sha>/` once via `aws s3 sync`
+- After publish, the ONLY mutation permitted is the operator deleting a
+  `canary.txt` file inside a role directory (see spec 03 — canary promotion)
+- Nothing else in `commits/<sha>/` may be modified, added, or deleted
+- Old commits are pruned by lifecycle rules (out of spec scope)
+
+**Layout** mirrors the source repository:
+
+- `profiles/*.nix` — profile modules importable by roles
+- `roles/<abstraction>/<environment>/<role>/main.nix` — role entry point
+- `roles/<abstraction>/<environment>/<role>/canary.txt` — optional gate
+- `roles/<abstraction>/<environment>/<role>/<fqdn>/main.nix` — host overrides (optional)
+
+## CI Publish Contract
+
+On merge to the config repo's release branch, CI performs these steps in order:
+
+1. `aws s3 sync . s3://<bucket>/commits/<sha>/`
+2. Wait for sync completion
+3. `aws s3 cp - s3://<bucket>/current` with `<sha>`
+
+**Order is critical.** `current` must be flipped LAST, only after the full
+tree is uploaded. Daemons only ever fetch from `commits/<sha>/` after seeing
+`<sha>` in `current`. This guarantees they never observe a partial tree.
+
+Torn-read hazard: none. The pointer flip is a single atomic S3 PUT.
 
 ## Hierarchy Levels
 
@@ -31,72 +75,76 @@ s3://<bucket>/
 |-------|---------|---------|
 | abstraction | `home`, `aws-us-east-1` | Infrastructure or organisational boundary |
 | environment | `production`, `staging` | Deployment phase |
-| role | `ada`, `zookeeper` | Machine function |
-| hostname | `ada-01.waldman.internal` | Individual host overrides |
+| role | `webserver`, `generic_node` | Machine function |
+| hostname | `web-01.waldman.internal` | Individual host overrides |
 
-The abstraction level is intentionally free-form. It may represent an infrastructure provider, a datacenter, a business unit, or any other meaningful grouping. The daemon does not interpret its semantics.
+The abstraction level is intentionally free-form. The daemon does not
+interpret its semantics; it treats the concatenated path as an S3 prefix.
 
 ## Magic Filenames
 
 | Filename | Location | Purpose |
 |----------|----------|---------|
-| `main.nix` | role dir, host dir | Entry point for a role or host |
-| `queries.toml` | role dir, host dir | DynamoDB queries for this context |
-| `canary.txt` | S3 bucket root | Staged rollout control |
+| `main.nix` | role dir, host dir | Entry point |
+| `canary.txt` | role dir | Role-scoped canary gate (see spec 03) |
 
-Any other filename is ignored by the daemon.
+Anything else in the tree is downloaded but has no special meaning to the daemon.
 
-## Profile Selection — Automatic Discovery
+## Profile Selection
 
-The daemon scans the downloaded `main.nix` files for `<nixops3/...>` Nix path references and downloads only those files. No separate manifest is needed — `main.nix` is the single source of truth.
+The daemon downloads **the entire `commits/<sha>/` tree** on each commit
+transition. There is no selective fetching, no import scanner. The tradeoff:
+
+- **Cost:** a homelab tree is tiny (dozens of files, tens of KB). Bandwidth is
+  negligible.
+- **Benefit:** simpler daemon; every host has the full config locally
+  (`ls /var/lib/nixops3/current/roles/` is a debugging superpower).
+
+Roles import profiles using `<nixops3/profiles/...>`:
 
 ```nix
 imports = [
-    <nixops3/profiles/base.nix>
-    <nixops3/profiles/hermes.nix>
-    <nixops3/roles/home/profiles/homelab-network.nix>
+  <nixops3/profiles/nixops3.nix>
+  <nixops3/profiles/users.nix>
 ];
 ```
 
-The daemon extracts each path inside `<nixops3/...>`, treats it as an S3 key, and fetches it. Adding a profile to the `profiles/` directory has no effect on any machine until that machine's `main.nix` references it.
+The daemon invokes `nixos-rebuild` with `-I nixops3=/var/lib/nixops3/commits/<sha>/`
+so these imports resolve to the current commit tree. See spec 02.
 
 ## Role and Host Entry Points
 
-The daemon always downloads:
+Every apply cycle considers:
 
-1. `roles/<role>/main.nix` — role entry point (required)
-2. `roles/<role>/<hostname>/main.nix` — host overrides (optional; skipped if absent)
+1. `commits/<sha>/roles/<role>/main.nix` — role entry point (required)
+2. `commits/<sha>/roles/<role>/<hostname>/main.nix` — host overrides (optional)
+
+The daemon's generated `configuration.nix` imports both from the local
+extraction of the commit tree.
 
 ## NixOS Import Conventions
 
 ### Role `main.nix`
-
-A role imports its profiles using the `<nixops3/...>` Nix path variable (set by the daemon via `-I nixops3=<work_dir>`):
 
 ```nix
 { ... }:
 {
   imports = [
     <nixops3/profiles/base.nix>
-    <nixops3/profiles/hermes.nix>
-    <nixops3/roles/home/profiles/homelab-network.nix>
+    <nixops3/profiles/users.nix>
   ];
 
-  networking.hostName = "ada-server";
-  services.openssh.settings.X11Forwarding = true;
+  networking.hostName = "web-server";
+  services.openssh.enable = true;
 }
 ```
 
-The `requires.toml` and the `imports` list in `main.nix` must be kept in sync: `requires.toml` tells the daemon what to download; `main.nix` tells Nix what to evaluate.
-
 ### Host `main.nix`
 
-A host adds host-specific overrides on top of what the role already configured:
-
 ```nix
-{ pkgs, ... }:
+{ ... }:
 {
-  networking.hostName = "ada-01.waldman.internal";
+  networking.hostName = "web-01.waldman.internal";
 
   users.users.local-admin = {
     isNormalUser = true;
@@ -105,32 +153,10 @@ A host adds host-specific overrides on top of what the role already configured:
 }
 ```
 
-The host `main.nix` does not need to import the role — the daemon-generated `configuration.nix` imports both independently.
-
-## queries.toml Format
-
-```toml
-[[query]]
-name        = "zookeeper_nodes"      # key in inventory.json
-role_prefix = "home/production/zookeeper"  # S3 role path prefix to match
-```
-
-Multiple `[[query]]` blocks are allowed. Queries from all collected `queries.toml` files are merged before execution.
+Host `main.nix` does not import the role — the daemon-generated
+`configuration.nix` imports both independently.
 
 ## Generated configuration.nix
 
-The daemon writes `/var/lib/nixops3/current/configuration.nix` with exactly three imports:
-
-```nix
-# Generated by nixops3 — do not edit manually
-{ ... }:
-{
-  imports = [
-    /etc/nixos/hardware-configuration.nix
-    ./roles/home/production/ada/main.nix
-    ./roles/home/production/ada/ada-01.waldman.internal/main.nix
-  ];
-}
-```
-
-`hardware-configuration.nix` is always first, always an absolute path. The host import is omitted when no host `main.nix` exists in S3. Profile imports are the role's own responsibility via `<nixops3/...>` in its `main.nix`.
+The daemon writes an ephemeral `configuration.nix` per apply cycle. See spec 02
+for the full generation rules and file placement.

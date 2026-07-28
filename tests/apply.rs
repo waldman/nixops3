@@ -439,6 +439,70 @@ async fn test_13_7_host_pin_replaces_role() {
     assert_eq!(dyn_str(last, "nixpkgs_rev"), RESOLVED_REV);
 }
 
+/// 13.8 Fleet-level pin — applied to a host with no role/host main.yaml.
+#[tokio::test]
+async fn test_13_8_fleet_level_pin() {
+    let fleet_yaml = format!(
+        r#"
+pin:
+  nixpkgs:
+    channel: nixos-25.05
+    rev: {EXPLICIT_REV}
+"#
+    );
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, "main.yaml", fleet_yaml)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    // Fleet pin is Pinned tier → resolver not called
+    assert_eq!(*ctx.resolver.calls.lock().unwrap(), 0);
+
+    let calls = ctx.executor.calls.lock().unwrap();
+    let rebuild = calls.iter().find(|c| c[0] == "nixos-rebuild").unwrap();
+    assert!(
+        rebuild.iter().any(|a| a == &nixpkgs_url(EXPLICIT_REV)),
+        "expected `-I {}` in {:?}", nixpkgs_url(EXPLICIT_REV), rebuild
+    );
+
+    let dyn_calls = ctx.dynamo.calls.lock().unwrap();
+    let last = dyn_calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "pinned");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "nixos-25.05");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), EXPLICIT_REV);
+}
+
+/// 13.9 Host-level pin overrides fleet-level pin.
+#[tokio::test]
+async fn test_13_9_host_overrides_fleet() {
+    let fleet_yaml = format!(
+        "pin:\n  nixpkgs:\n    channel: nixos-25.05\n    rev: {EXPLICIT_REV}\n"
+    );
+    let host_yaml = "pin:\n  nixpkgs:\n    channel: nixos-25.11\n";
+
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, "main.yaml", fleet_yaml)
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/{TEST_HOST}/main.yaml"),
+            host_yaml,
+        )
+        .resolver_rev(RESOLVED_REV)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+    assert_eq!(outcome, CycleOutcome::Applied);
+    // Host pin is Floating (no rev) → resolver called once
+    assert_eq!(*ctx.resolver.calls.lock().unwrap(), 1);
+
+    let dyn_calls = ctx.dynamo.calls.lock().unwrap();
+    let last = dyn_calls.last().unwrap();
+    assert_eq!(dyn_str(last, "pin_mode"), "floating");
+    assert_eq!(dyn_str(last, "nixpkgs_channel"), "nixos-25.11");
+    assert_eq!(dyn_str(last, "nixpkgs_rev"), RESOLVED_REV);
+}
+
 // Helper — extract a string field from a DynamoDB item map
 fn dyn_str(item: &std::collections::HashMap<String, nixops3d::types::DynVal>, key: &str) -> String {
     match item.get(key) {

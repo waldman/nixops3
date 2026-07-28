@@ -229,13 +229,15 @@ fn pin_info(res: &PinResolution) -> PinInfo<'_> {
     }
 }
 
-/// Load role's main.yaml and host's main.yaml from the local tree, then merge.
+/// Load fleet, role, and host main.yaml from the local tree; merge per spec 08
+/// (most-specific-wins per top-level key, in order fleet → role → host).
 fn load_main_yaml(tree_dir: &Path, role: &str, hostname: &str) -> Result<MainYaml> {
     let role_dir = tree_dir.join(format!("roles/{role}"));
     let host_dir = role_dir.join(hostname);
+    let fleet_yaml = MainYaml::read_optional(tree_dir)?;
     let role_yaml = MainYaml::read_optional(&role_dir)?;
     let host_yaml = MainYaml::read_optional(&host_dir)?;
-    Ok(MainYaml::merge(role_yaml, host_yaml))
+    Ok(MainYaml::layer_all(vec![fleet_yaml, role_yaml, host_yaml]))
 }
 
 /// GET `current` from S3, validate as 40-char hex sha.

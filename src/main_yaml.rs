@@ -53,13 +53,20 @@ impl MainYaml {
         }
     }
 
-    /// Merge role and host yaml per spec 08: per-top-level-key, most-specific-wins
-    /// (host's block entirely replaces role's, no deep merge).
-    pub fn merge(role: MainYaml, host: MainYaml) -> MainYaml {
+    /// Merge two layers per spec 08: per-top-level-key, most-specific-wins.
+    /// `overlay`'s block entirely replaces `base`'s when set (no deep merge).
+    pub fn merge(base: MainYaml, overlay: MainYaml) -> MainYaml {
         MainYaml {
-            pin: host.pin.or(role.pin),
-            queries: host.queries.or(role.queries),
+            pin: overlay.pin.or(base.pin),
+            queries: overlay.queries.or(base.queries),
         }
+    }
+
+    /// Merge a chain of layers, most-general first. Later layers override
+    /// earlier ones per top-level key. `layer_all([fleet, role, host])`
+    /// produces the effective config for one host.
+    pub fn layer_all(layers: Vec<MainYaml>) -> MainYaml {
+        layers.into_iter().fold(MainYaml::default(), Self::merge)
     }
 
     fn validate(&self) -> Result<()> {
@@ -192,9 +199,51 @@ queries:
     }
 
     #[test]
-    fn test_6_13_both_absent() {
-        let merged = MainYaml::merge(MainYaml::default(), MainYaml::default());
+    fn test_6_13_all_absent() {
+        let merged = MainYaml::layer_all(vec![
+            MainYaml::default(),
+            MainYaml::default(),
+            MainYaml::default(),
+        ]);
         assert!(merged.pin.is_none());
         assert!(merged.queries.is_none());
+    }
+
+    #[test]
+    fn test_6_14_fleet_only_applies() {
+        let fleet = MainYaml::from_str(&format!(
+            "pin: {{ nixpkgs: {{ channel: F, rev: {REV} }} }}"
+        ))
+        .unwrap();
+        let merged = MainYaml::layer_all(vec![fleet, MainYaml::default(), MainYaml::default()]);
+        let p = merged.pin.unwrap();
+        assert_eq!(p.nixpkgs.channel, "F");
+        assert_eq!(p.nixpkgs.rev.as_deref(), Some(REV));
+    }
+
+    #[test]
+    fn test_6_15_role_overrides_fleet() {
+        let fleet = MainYaml::from_str("pin: { nixpkgs: { channel: F } }").unwrap();
+        let role = MainYaml::from_str("pin: { nixpkgs: { channel: R } }").unwrap();
+        let merged = MainYaml::layer_all(vec![fleet, role, MainYaml::default()]);
+        assert_eq!(merged.pin.unwrap().nixpkgs.channel, "R");
+    }
+
+    #[test]
+    fn test_6_16_host_overrides_both() {
+        let fleet = MainYaml::from_str("pin: { nixpkgs: { channel: F } }").unwrap();
+        let role = MainYaml::from_str("pin: { nixpkgs: { channel: R } }").unwrap();
+        let host = MainYaml::from_str("pin: { nixpkgs: { channel: H } }").unwrap();
+        let merged = MainYaml::layer_all(vec![fleet, role, host]);
+        assert_eq!(merged.pin.unwrap().nixpkgs.channel, "H");
+    }
+
+    #[test]
+    fn test_6_17_independent_keys() {
+        let fleet = MainYaml::from_str("pin: { nixpkgs: { channel: F } }").unwrap();
+        let role = MainYaml::from_str("queries:\n  q1: { role_prefix: p }\n").unwrap();
+        let merged = MainYaml::layer_all(vec![fleet, role, MainYaml::default()]);
+        assert_eq!(merged.pin.unwrap().nixpkgs.channel, "F");
+        assert_eq!(merged.queries.unwrap()["q1"].role_prefix, "p");
     }
 }

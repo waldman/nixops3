@@ -208,23 +208,40 @@ Expected: parse error.
 
 **6.9 merge — host overrides role's pin entirely**
 Setup: role YAML has `pin.nixpkgs = {channel: A, rev: R1}`; host YAML has
-`pin.nixpkgs = {channel: B}` (no rev).
+`pin.nixpkgs = {channel: B}` (no rev). Fleet absent.
 Expected merged: `pin.nixpkgs = {channel: B, rev: None}`. Host wins wholesale;
 the role's `rev` is not inherited.
 
 **6.10 merge — host omits pin, inherits role's**
-Setup: role has `pin`; host YAML omits `pin`.
+Setup: role has `pin`; host YAML omits `pin`. Fleet absent.
 Expected merged: role's `pin` unchanged.
 
 **6.11 merge — host overrides queries entirely**
-Setup: role has `queries: {a, b}`; host has `queries: {c}`.
+Setup: role has `queries: {a, b}`; host has `queries: {c}`. Fleet absent.
 Expected merged: `queries: {c}` only. No merge of individual keys.
 
 **6.12 role YAML absent, host YAML present**
 Expected: host YAML applies as-is; no error.
 
-**6.13 both YAMLs absent**
+**6.13 all three YAMLs absent**
 Expected: `MainYaml { pin: None, queries: None }`; no error.
+
+**6.14 merge — fleet-level applies when role and host omit**
+Setup: fleet YAML has `pin.nixpkgs = {channel: F, rev: RF}`; role omits `pin`;
+host omits `pin`.
+Expected merged: `pin.nixpkgs = {channel: F, rev: RF}` (from fleet).
+
+**6.15 merge — role overrides fleet**
+Setup: fleet has `pin = P_fleet`; role has `pin = P_role`; host omits.
+Expected merged: `pin = P_role`.
+
+**6.16 merge — host overrides both fleet and role**
+Setup: fleet has `pin = P_fleet`; role has `pin = P_role`; host has `pin = P_host`.
+Expected merged: `pin = P_host`.
+
+**6.17 merge — fleet pin + role queries (independent keys)**
+Setup: fleet has only `pin`; role has only `queries`; host absent.
+Expected merged: both `pin` (from fleet) and `queries` (from role) present.
 
 **6.14 strict types**
 Input: `pin: { nixpkgs: { channel: no, rev: 12345 } }` (unquoted `no`, numeric `rev`).

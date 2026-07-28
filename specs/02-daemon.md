@@ -116,7 +116,7 @@ loop:
     list = list_prefix("commits/<target>/")
     parallel: for key in list: GET key, write to /var/lib/nixops3/<key>
 
-  # 5. Load main.yaml (merged role + host per spec 08)
+  # 5. Load main.yaml (merged fleet + role + host per spec 08)
   meta = load_main_yaml(commit_tree, role, hostname)
 
   # 6. Resolve pin per spec 09 (three-tier: Loose / Floating / Pinned)

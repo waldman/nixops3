@@ -18,17 +18,26 @@ schema break.
 
 ## Location
 
-Same hierarchy as `main.nix`:
+Three tiers of `main.yaml`, each optional:
 
-- `commits/<sha>/roles/<abstraction>/<environment>/<role>/main.yaml` — role level
-- `commits/<sha>/roles/<abstraction>/<environment>/<role>/<hostname>/main.yaml` — host level
+| Path | Level | Applies to |
+|---|---|---|
+| `commits/<sha>/main.yaml` | fleet | Every host of every role |
+| `commits/<sha>/roles/<abstraction>/<environment>/<role>/main.yaml` | role | Every host of one role |
+| `commits/<sha>/roles/<abstraction>/<environment>/<role>/<hostname>/main.yaml` | host | One specific host |
 
-Both are optional. An entirely absent `main.yaml` at both levels means no
-pin (falls back per spec 09) and no queries.
+All three are optional. An entirely absent `main.yaml` at all three levels
+means no pin (falls back per spec 09) and no queries.
 
-**No fleet-default in v1.** If you want the same pin fleet-wide, put it in
-every role's `main.yaml`. A fleet-default key (`commits/<sha>/main.yaml`) can
-be added in a later version if the need is real.
+**Typical usage:**
+
+- **Fleet-level pin, role/host overrides for exceptions.** The common case:
+  everyone runs the same nixpkgs; one legacy host or role stays on an
+  older channel while migrating. Put the fleet-wide pin at
+  `commits/<sha>/main.yaml`; add per-host overrides only where needed.
+- **Per-role queries.** DynamoDB queries usually make sense per-role
+  (webserver queries zookeeper nodes; database queries nothing). Author
+  them at role level.
 
 ## Format
 
@@ -55,27 +64,37 @@ queries:
 
 ## Merge Semantics
 
-**Per-top-level-key, most-specific-wins.** If both role and host `main.yaml`
-exist, each top-level key is resolved independently:
+**Per-top-level-key, most-specific-wins across three tiers.** Layers apply in
+order: fleet → role → host. For each top-level key (`pin`, `queries`, future
+keys), the most-specific tier that defines the key wins; that tier's value
+replaces any less-specific value **entirely** (whole-block replacement, no
+deep-merge).
 
-- If the host YAML has the key, the host's value replaces the role's entirely.
-- If the host YAML omits the key, the role's value is used.
-- No deep-merge. No list concatenation. Whole-block replacement per key.
+Formally: `effective[key] = host[key] || role[key] || fleet[key] || undefined`.
 
-**Example:**
+- No deep-merge. No list concatenation. No per-sub-field override.
+- A tier that omits a key inherits from the next less-specific tier.
+- A tier that defines a key wins over everything less specific.
+
+**Example — fleet-wide pin with one canary host on newer nixpkgs:**
 
 ```yaml
-# roles/home/production/webserver/main.yaml
+# commits/<sha>/main.yaml                (fleet default)
 pin:
   nixpkgs: { channel: nixos-25.05, rev: abc1234... }
-queries:
-  zk_nodes: { role_prefix: home/production/zookeeper }
 ```
 
 ```yaml
-# roles/home/production/webserver/web-canary-01/main.yaml
+# commits/<sha>/roles/home/production/webserver/main.yaml   (role)
+queries:
+  zk_nodes: { role_prefix: home/production/zookeeper }
+# pin: omitted → inherits fleet's pin
+```
+
+```yaml
+# commits/<sha>/roles/home/production/webserver/web-canary-01/main.yaml
 pin:
-  nixpkgs: { channel: nixos-25.11 }        # host on newer nixpkgs for testing
+  nixpkgs: { channel: nixos-25.11 }        # override just this host
 # queries: omitted → inherits role's queries
 ```
 
@@ -88,12 +107,21 @@ queries:
   zk_nodes: { role_prefix: home/production/zookeeper }   # from role
 ```
 
-Note that the host's `pin:` block **entirely replaces** the role's `pin:`.
-The host isn't just overriding `pin.nixpkgs.channel` — it's replacing the
-whole `pin:` block. In this example there's no `rev`, so the host also
-loses the role's rev (i.e. becomes floating on 25.11). If the host wanted
-to keep the rev semantics but change the channel, it would need to spell
-both out.
+**Effective config for `web-02` (webserver role, no host YAML):**
+
+```yaml
+pin:
+  nixpkgs: { channel: nixos-25.05, rev: abc1234... }     # from fleet
+queries:
+  zk_nodes: { role_prefix: home/production/zookeeper }   # from role
+```
+
+Note that the host's `pin:` block in the canary example **entirely replaces**
+whatever was inherited. `web-canary-01` isn't just overriding
+`pin.nixpkgs.channel` — it's replacing the whole `pin:` block. There's no
+`rev`, so the host becomes floating on 25.11 even though the fleet had a
+pinned rev on 25.05. Whole-block replacement is a deliberate simplicity
+trade: predictable > powerful.
 
 This is a deliberate simplicity trade: predictable > powerful.
 

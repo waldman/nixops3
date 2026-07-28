@@ -5,11 +5,13 @@
 Two hosts running "the same config" must produce the same closure. In v0.3,
 the daemon evaluated `.nix` sources against whatever `nixpkgs` each host
 happened to have (via channel discovery), so identical source could yield
-different systems. v0.4 introduces per-role/per-host nixpkgs pinning to
-control this.
+different systems. v0.4 introduces per-fleet/per-role/per-host nixpkgs
+pinning to control this.
 
-The design gives three tiers of guarantee, chosen per role/host by which
-fields appear in `main.yaml` (spec 08):
+The design gives three tiers of guarantee, chosen per fleet/role/host by
+which fields appear in `main.yaml` (spec 08). The effective pin is the
+most-specific defined `pin:` block across the fleet → role → host merge
+chain.
 
 | Tier | Config | Convergence guarantee |
 |---|---|---|
@@ -62,8 +64,8 @@ tier), the daemon resolves the channel at every cycle.
 
 ### Tier 1: Loose (no `pin:` block)
 
-Effective when neither role nor host `main.yaml` declares a `pin:` block
-(after merge per spec 08).
+Effective when none of the fleet, role, or host `main.yaml` files declare a
+`pin:` block (after merge per spec 08).
 
 **Daemon behavior:** falls back to nixpkgs discovery (`NIX_PATH` →
 `/etc/set-environment` → root channels), same as v0.3.

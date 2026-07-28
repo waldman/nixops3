@@ -85,10 +85,14 @@ interpret its semantics; it treats the concatenated path as an S3 prefix.
 
 | Filename | Location | Purpose |
 |----------|----------|---------|
-| `main.nix` | role dir, host dir | Entry point |
+| `main.nix` | role dir, host dir | NixOS config entry point |
+| `main.yaml` | role dir, host dir | Role/host metadata: pin, queries (see spec 08) |
 | `canary.txt` | role dir | Role-scoped canary gate (see spec 03) |
 
 Anything else in the tree is downloaded but has no special meaning to the daemon.
+
+Note: `queries.toml` from v0.3 is superseded by the `queries:` section of
+`main.yaml` (spec 08). v0.4 daemons do not read `queries.toml`.
 
 ## Profile Selection
 

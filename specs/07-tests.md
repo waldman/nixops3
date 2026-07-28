@@ -172,28 +172,135 @@ Expected: role import present, host import absent.
 
 ---
 
-### 6. queries.toml Parsing and Merging (`src/queries.rs`)
+### 6. `main.yaml` Parsing and Merging (`src/main_yaml.rs`)
 
-**6.1 valid single query**
-Expected: one query with correct fields.
+**6.1 valid full config**
+Input: YAML with both `pin:` and `queries:` sections populated.
+Expected: parsed struct with both sections; no error.
 
-**6.2 valid multiple queries**
-Expected: two query structs.
+**6.2 empty file**
+Input: empty string, or `{}`.
+Expected: `MainYaml { pin: None, queries: None }`; no error.
 
-**6.3 empty queries.toml**
-Expected: empty query list (not an error).
+**6.3 pin without channel**
+Input: `pin: { nixpkgs: { rev: "abc..." } }` (missing required `channel`).
+Expected: parse error naming the missing field.
 
-**6.4 missing name field**
+**6.4 pin with channel only**
+Input: `pin: { nixpkgs: { channel: "nixos-25.05" } }`.
+Expected: parsed with `rev = None`.
+
+**6.5 pin with channel and rev**
+Input: both present.
+Expected: parsed correctly; rev is a 40-char lowercase hex string.
+
+**6.6 rev must be 40 hex chars**
+Input: rev = `"abc"` (too short) or `"XYZ123..."` (non-hex).
 Expected: parse error.
 
-**6.5 missing role_prefix field**
+**6.7 queries as a map**
+Input: `queries: { zk_nodes: { role_prefix: "..." } }`.
+Expected: map with one entry keyed `zk_nodes`.
+
+**6.8 queries missing role_prefix**
+Input: `queries: { zk_nodes: {} }`.
 Expected: parse error.
 
-**6.6 merge — role and host, no duplicates**
-Expected: merged list has both queries.
+**6.9 merge — host overrides role's pin entirely**
+Setup: role YAML has `pin.nixpkgs = {channel: A, rev: R1}`; host YAML has
+`pin.nixpkgs = {channel: B}` (no rev).
+Expected merged: `pin.nixpkgs = {channel: B, rev: None}`. Host wins wholesale;
+the role's `rev` is not inherited.
 
-**6.7 merge — duplicate name, host wins**
-Expected: merged list has one entry with the host's role_prefix.
+**6.10 merge — host omits pin, inherits role's**
+Setup: role has `pin`; host YAML omits `pin`.
+Expected merged: role's `pin` unchanged.
+
+**6.11 merge — host overrides queries entirely**
+Setup: role has `queries: {a, b}`; host has `queries: {c}`.
+Expected merged: `queries: {c}` only. No merge of individual keys.
+
+**6.12 role YAML absent, host YAML present**
+Expected: host YAML applies as-is; no error.
+
+**6.13 both YAMLs absent**
+Expected: `MainYaml { pin: None, queries: None }`; no error.
+
+**6.14 strict types**
+Input: `pin: { nixpkgs: { channel: no, rev: 12345 } }` (unquoted `no`, numeric `rev`).
+Expected: parse error (rev must be string, channel expected as string).
+
+---
+
+### 6b. Pin Resolution (`src/pin.rs`)
+
+**6b.1 Loose tier — no pin block**
+Input: merged main.yaml with no `pin:`. Config: defaults.
+Expected: `PinResolution::Loose`. No HTTP call.
+
+**6b.2 Loose tier — require_pin fails cycle**
+Input: no pin block. Config: `require_pin = true`.
+Expected: error, cycle fails.
+
+**6b.3 Floating tier — channel resolves to rev**
+Input: `pin.nixpkgs = {channel: "nixos-25.05"}`. Mock GitHub API returns sha `abc1234...`.
+Expected: `PinResolution::Floating { channel, rev = "abc1234..." }`. One HTTP call.
+
+**6b.4 Floating tier — cached resolution**
+Setup: two back-to-back resolutions of the same channel within `channel_ttl_secs`.
+Expected: second resolution hits the in-process cache; only one HTTP call issued.
+
+**6b.5 Floating tier — require_explicit_rev fails cycle**
+Input: `pin.nixpkgs = {channel: "..."}` (no rev). Config: `require_explicit_rev = true`.
+Expected: error, cycle fails.
+
+**6b.6 Pinned tier — rev used directly**
+Input: `pin.nixpkgs = {channel: "nixos-25.05", rev: "abc1234..."}`.
+Expected: `PinResolution::Pinned { channel, rev }`. No HTTP call.
+
+**6b.7 Pinned tier — malformed rev**
+Input: rev is not 40 hex chars.
+Expected: parse error (caught at YAML parse, spec 6.6).
+
+**6b.8 Channel resolution HTTP failure**
+Setup: mock GitHub API returns 500.
+Expected: error, cycle fails.
+
+**6b.9 Channel resolution 404**
+Setup: mock GitHub API returns 404 (channel doesn't exist).
+Expected: error naming the channel, cycle fails.
+
+---
+
+### 6c. nixpkgs Cache (`src/nixpkgs.rs`)
+
+**6c.1 ensures rev is materialized**
+Input: rev not in cache. Mock HTTPS returns tarball bytes.
+Expected: `/var/lib/nixops3/nixpkgs/<rev>/` exists and contains the extracted content (root-level `default.nix`, etc.).
+
+**6c.2 no-op when already cached**
+Input: `/var/lib/nixops3/nixpkgs/<rev>/` already exists.
+Expected: no HTTPS call.
+
+**6c.3 extraction is to tmp then renamed**
+Setup: mock HTTPS observes filesystem mid-extract.
+Expected: files land in `nixpkgs/.tmp-<rev>-<pid>/`, then renamed to `nixpkgs/<rev>/`.
+
+**6c.4 tar strip-components handling**
+Input: tarball's root entry is `nixpkgs-abc1234/default.nix` (GitHub archive convention).
+Expected: extracted `default.nix` sits at `/var/lib/nixops3/nixpkgs/<rev>/default.nix` (wrapper dir stripped).
+
+**6c.5 partial extraction leaves no `nixpkgs/<rev>/`**
+Setup: mock HTTPS truncates mid-tarball.
+Expected: `nixpkgs/<rev>/` does not exist; `nixpkgs/.tmp-<rev>-*` may remain (cleaned next cycle).
+
+**6c.6 LRU prune keeps N most recent**
+Setup: 5 nixpkgs entries; `nixpkgs_retain = 3`.
+Expected: 3 remain (newest by mtime).
+
+**6c.7 LRU prune never removes in-use rev**
+Setup: 5 entries; `nixpkgs_retain = 3`; in-use rev is the oldest.
+Expected: in-use rev preserved; 3 newest kept; total 4 remaining.
 
 ---
 
@@ -367,7 +474,7 @@ Setup: mock Secrets Manager with role-level + host-level secrets.
 Expected: both written to `/run/nixops3/secrets/` before `nixos-rebuild` runs; host-level wins on same short name.
 
 **12.13 query results written before rebuild**
-Setup: `queries.toml` at `commits/<sha>/roles/<role>/queries.toml` with one query; DynamoDB scan returns two items.
+Setup: `main.yaml` at `commits/<sha>/roles/<role>/main.yaml` with a `queries:` section defining one query; DynamoDB scan returns two items.
 Expected: `/var/lib/nixops3/inventory.json` written before `nixos-rebuild`; correct structure.
 
 **12.14 NIX_PATH resolution of `<nixops3/...>`**
@@ -377,6 +484,54 @@ Expected: `nixos-rebuild` invoked with `-I nixops3=/var/lib/nixops3/commits/<sha
 **12.15 concurrency — flock serializes cycles**
 Setup: two concurrent invocations against the same `/var/lib/nixops3/`.
 Expected: second invocation blocks on `flock`; runs its own cycle after the first releases.
+
+---
+
+### 13. Pin Tiers End-to-End (`tests/apply.rs`)
+
+**13.1 Loose tier — no main.yaml at all**
+Setup: no `main.yaml` in commit tree; nixops3.toml has no `[pins]` or defaults.
+Expected: apply succeeds via channel discovery; `pin_mode=loose`, `nixpkgs_channel=""`, `nixpkgs_rev=""` in heartbeat. WARN logged.
+
+**13.2 Loose tier — require_pin blocks**
+Setup: same as 13.1 but `require_pin = true`.
+Expected: cycle fails; `status=failed`; error mentions missing pin.
+
+**13.3 Floating tier — resolves via mock GitHub API**
+Setup: `main.yaml` has `pin.nixpkgs.channel: nixos-25.05` (no rev). Mock HTTP resolver returns sha `abc1234...` for that channel. Mock nixpkgs tarball provided.
+Expected:
+- Resolver called once with the channel
+- Tarball downloaded, extracted to `/var/lib/nixops3/nixpkgs/abc1234.../`
+- `nixos-rebuild` invoked with `-I nixpkgs=/var/lib/nixops3/nixpkgs/abc1234.../`
+- Heartbeat: `pin_mode=floating`, `nixpkgs_channel=nixos-25.05`, `nixpkgs_rev=abc1234...`
+
+**13.4 Floating tier — require_explicit_rev blocks**
+Setup: same YAML as 13.3 but `require_explicit_rev = true`.
+Expected: cycle fails; error mentions missing rev.
+
+**13.5 Pinned tier — no resolver call**
+Setup: `main.yaml` has both `channel` and `rev`.
+Expected: mock resolver NOT called; tarball downloaded from the pinned rev's URL; heartbeat carries `pin_mode=pinned`.
+
+**13.6 Pinned tier — cache hit skips download**
+Setup: `main.yaml` has `channel + rev`. `/var/lib/nixops3/nixpkgs/<rev>/` already exists.
+Expected: no HTTPS call for nixpkgs; apply proceeds using the cached tree.
+
+**13.7 Merge — host `main.yaml` overrides role's pin**
+Setup: role `main.yaml` pins `nixos-25.05, rev=X`; host `main.yaml` pins `nixos-25.11` (no rev).
+Expected: daemon uses `nixos-25.11` in Floating mode; host's pin block replaced role's wholesale (role's `rev` NOT inherited).
+
+**13.8 Merge — host omits pin, inherits role's**
+Setup: role `main.yaml` has `pin`; host `main.yaml` has only `queries:`, no `pin:`.
+Expected: role's pin applies unchanged.
+
+**13.9 Pin resolution failure — cycle fails**
+Setup: Floating pin; mock resolver returns 500.
+Expected: no `nixos-rebuild` call; symlink unchanged; heartbeat `status=failed`.
+
+**13.10 Malformed pin — cycle fails**
+Setup: `pin: { nixpkgs: { rev: "abc..." } }` (missing channel).
+Expected: cycle fails at YAML parse; heartbeat `status=failed`.
 
 ---
 

@@ -61,6 +61,13 @@ secret_access_key = "..."
 enabled  = true
 table    = "nixops3-inventory"
 ttl_secs = 1296000    # optional; defaults to 2 × poll_interval_secs
+
+# nixpkgs pinning (see spec 09) — all optional
+[pins]
+require_pin          = false     # true: missing pin: block → cycle fails
+require_explicit_rev = false     # true: pin without rev → cycle fails
+nixpkgs_retain       = 3         # LRU size for /var/lib/nixops3/nixpkgs/
+channel_ttl_secs     = 300       # in-process cache TTL for channel resolution
 ```
 
 The `role` field encodes the full hierarchy: `<abstraction>/<environment>/<role-name>`.
@@ -73,6 +80,7 @@ The daemon does not parse its structure; it uses it as an S3 path prefix.
 | `/etc/nixops3/nixops3.toml` | Daemon config | Read at startup; reread each poll cycle |
 | `/etc/nixos/hardware-configuration.nix` | Hardware config | Never in S3; auto-generated if absent; imported if present |
 | `/var/lib/nixops3/commits/<sha>/` | Downloaded commit trees | LRU pruned to `trees_retain` most recent |
+| `/var/lib/nixops3/nixpkgs/<rev>/` | Extracted nixpkgs (pinned tiers, spec 09) | LRU pruned to `nixpkgs_retain` most recent |
 | `/var/lib/nixops3/current` | Symlink → `commits/<sha>` | THE state store; last successful apply |
 | `/etc/nixos/configuration.nix` | Generated per apply cycle | Standard NixOS location; overwritten each cycle |
 | `/run/nixops3/secrets/` | Secrets from AWS SM | tmpfs, mode 0700, owner root |
@@ -110,29 +118,40 @@ loop:
     list = list_prefix("commits/<target>/")
     parallel: for key in list: GET key, write to /var/lib/nixops3/<key>
 
-  # 5. Ensure hardware config exists
+  # 5. Load main.yaml (merged role + host per spec 08)
+  meta = load_main_yaml(commit_tree, role, hostname)
+
+  # 6. Resolve pin per spec 09 (three-tier: Loose / Floating / Pinned)
+  # Sets `nixpkgs_path` to /var/lib/nixops3/nixpkgs/<rev>/ for Floating/Pinned,
+  # or None for Loose (fall back to channel discovery).
+  # Fails the cycle on: malformed pin, require_pin / require_explicit_rev
+  # violation, channel resolution error, tarball download error.
+  nixpkgs_path = resolve_pin(meta.pin, config.pins)
+
+  # 7. Ensure hardware config exists
   if not exists(/etc/nixos/hardware-configuration.nix):
     exec("nixos-generate-config")
 
-  # 6. Inventory queries (if enabled)
-  if inventory.enabled:
-    queries = collect_queries(commit_tree)
-    results = run_dynamodb_queries(queries)
+  # 8. Inventory queries (from meta.queries)
+  if inventory.enabled and meta.queries not empty:
+    results = run_dynamodb_queries(meta.queries)
     write("/var/lib/nixops3/inventory.json", results)
 
-  # 7. Fetch secrets
+  # 9. Fetch secrets
   pull_secrets(role, hostname)             # writes to /run/nixops3/secrets/
 
-  # 8. Generate configuration.nix at the default NixOS location
+  # 10. Generate configuration.nix at the default NixOS location
   write("/etc/nixos/configuration.nix", generate_config(target))
 
-  # 9. Rebuild — pass -I nixos-config= explicitly because systemd strips
+  # 11. Rebuild — pass -I nixos-config= explicitly because systemd strips
   # NIX_PATH; the /etc/nixos location still helps for manual debugging
   # from an interactive shell (where NIX_PATH is set).
+  # -I nixpkgs= comes from resolve_pin above (pinned path), or from
+  # channel discovery (Loose tier fallback).
   result = exec("nixos-rebuild switch \
     -I nixos-config=/etc/nixos/configuration.nix \
     -I nixops3=/var/lib/nixops3/commits/<target> \
-    [-I nixpkgs=<discovered path>]")
+    -I nixpkgs=<nixpkgs_path or discovered>")
 
   # 10. On success, atomically advance the symlink
   if result.success:
@@ -252,13 +271,15 @@ Just Works without needing to know the path.
 `-I nixops3=` registers the extracted commit tree as a Nix path, resolving
 role imports like `<nixops3/profiles/base.nix>`.
 
-`-I nixpkgs=` is added when a nixpkgs path can be discovered. Required on
-freshly provisioned machines where `sudo` has stripped `NIX_PATH` and root's
-Nix channels may not yet be set up.
+`-I nixpkgs=` source depends on the pinning tier (see spec 09):
 
-### nixpkgs Discovery
+- **Loose** (no `pin:` block): path comes from channel discovery — see below.
+- **Floating** / **Pinned**: path is `/var/lib/nixops3/nixpkgs/<rev>/`,
+  materialized by the daemon per spec 09.
 
-The daemon searches, stopping at the first hit:
+### nixpkgs Channel Discovery (Loose tier fallback)
+
+For the Loose tier only. The daemon searches, stopping at the first hit:
 
 1. `NIX_PATH` environment variable
 2. `/etc/set-environment` (NixOS activation output)
@@ -266,7 +287,8 @@ The daemon searches, stopping at the first hit:
 4. `/nix/var/nix/profiles/per-user/root/channels/nixpkgs`
 
 If none found, `-I nixpkgs=` is omitted and `nixos-rebuild` must locate
-nixpkgs itself.
+nixpkgs itself. This is likely to fail on freshly provisioned machines
+where `sudo` strips `NIX_PATH` — which is why pinning (spec 09) exists.
 
 stdout and stderr are captured. On non-zero exit: log full stderr to journald,
 do not advance the symlink.

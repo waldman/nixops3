@@ -27,6 +27,9 @@ The feature is opt-in. Disabling it has no effect on config apply behaviour.
 | `network` | S | network/prefix (v1: always `"unknown"`) | `192.168.15.0/24` |
 | `applied_sha` | S | basename of `/var/lib/nixops3/current` symlink target; `""` if no symlink yet | `abc1234...` |
 | `target_sha` | S | value of `current` in S3 the daemon resolved this cycle | `abc1234...` |
+| `pin_mode` | S | pinning tier used this cycle: `loose`, `floating`, or `pinned` (spec 09) | `pinned` |
+| `nixpkgs_channel` | S | channel label from `pin.nixpkgs.channel`; `""` for Loose tier | `nixos-25.05` |
+| `nixpkgs_rev` | S | concrete nixpkgs rev used; `""` for Loose tier | `abc1234...` |
 | `last_run_status` | S | `ok`, `failed`, `canary_skip` | `ok` |
 | `last_seen` | S | ISO 8601 UTC | `2026-07-26T21:00:00Z` |
 | `ttl` | N | Unix epoch | `1753570800` |
@@ -93,33 +96,43 @@ Downstream tooling can compute simple fleet health from a scan:
 - Lagging: `applied_sha != target_sha AND last_run_status IN ("ok", "canary_skip")`
 - Broken: `last_run_status == "failed"`
 
-## Search Queries — queries.toml
+## Search Queries — `main.yaml` `queries:` section
 
 ### Definition
 
-Any role or host directory may include a `queries.toml` file defining
-DynamoDB queries to run before `nixos-rebuild`. The daemon reads all
-`queries.toml` files under `commits/<sha>/roles/<role>/` and
-`commits/<sha>/roles/<role>/<hostname>/`.
+Queries live in the `queries:` section of `main.yaml` at role or host level
+(spec 08). Effective queries are the merged result of role and host YAML
+per the rules in spec 08 (host `queries:` block, if present, replaces role's
+entirely — no per-key merge).
 
-```toml
-[[query]]
-name        = "zookeeper_nodes"
-role_prefix = "home/production/zookeeper"
+```yaml
+# roles/home/production/webserver/main.yaml
+queries:
+  zookeeper_nodes:
+    role_prefix: home/production/zookeeper
 ```
 
-**Fields:**
+**Fields per query (values under each name key):**
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Key in `inventory.json` under which results are stored |
 | `role_prefix` | yes | S3 role path prefix; matches items where `role` starts with this value |
+
+The query name is the map key (was the `name` field in v0.3's
+`queries.toml`).
+
+### v0.3 → v0.4 migration
+
+v0.4 daemons do not read `queries.toml`. Rewrite each `queries.toml` as a
+`queries:` section in the same directory's `main.yaml`. See spec 08.
 
 ### Query Merging
 
-All `[[query]]` entries from all discovered `queries.toml` files are merged
-into a single list. Duplicate `name` values take the last definition
-(most-specific wins: host > role).
+Queries follow the general `main.yaml` merge rule (spec 08): if the host's
+`main.yaml` has a `queries:` section, it **replaces the role's `queries:`
+block entirely**. There is no per-key merge (deliberate — see spec 08 for
+rationale). A host that wants to add one query on top of the role's set
+must re-declare all of them.
 
 ### DynamoDB Query Execution
 
@@ -170,13 +183,14 @@ in {
 The daemon writes to DynamoDB at the end of every poll cycle, regardless of
 whether a rebuild occurred:
 
-| Scenario | `last_run_status` | `applied_sha` | `target_sha` |
-|----------|-------------------|---------------|--------------|
-| Symlink already at target sha (no-op) | `ok` | current symlink | resolved from `current` |
-| Apply succeeded, symlink advanced | `ok` | new sha (equals target) | resolved from `current` |
-| Apply failed | `failed` | unchanged (old sha) | resolved from `current` |
-| Canary skip | `canary_skip` | unchanged | resolved from `current` |
-| S3 pointer fetch failed | `failed` | unchanged | `""` |
+| Scenario | `last_run_status` | `applied_sha` | `target_sha` | `nixpkgs_*` |
+|----------|-------------------|---------------|--------------|-------------|
+| Symlink already at target sha (no-op) | `ok` | current symlink | resolved from `current` | not updated this cycle (kept from prior heartbeat if any) |
+| Apply succeeded, symlink advanced | `ok` | new sha (equals target) | resolved from `current` | resolved for this cycle |
+| Apply failed | `failed` | unchanged (old sha) | resolved from `current` | resolved for this cycle |
+| Canary skip | `canary_skip` | unchanged | resolved from `current` | `""` (pin not evaluated) |
+| S3 pointer fetch failed | `failed` | unchanged | `""` | `""` |
+| Pin resolution failed (bad config, HTTP error) | `failed` | unchanged | resolved from `current` | `""` |
 
 On any DynamoDB write failure: log the error to journald, continue.
 Inventory failure must never block config apply.

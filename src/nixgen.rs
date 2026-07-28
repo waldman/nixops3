@@ -5,7 +5,7 @@ use std::path::Path;
 /// Imports:
 /// 1. `/etc/nixos/hardware-configuration.nix` — absolute, if `has_hw_config`
 /// 2. `<tree_dir>/roles/<role>/main.nix` — absolute path into extracted tree
-/// 3. `<tree_dir>/roles/<role>/<hostname>/main.nix` — absolute, if `hostname` is Some
+/// 3. `<tree_dir>/roles/<role>/hosts/<hostname>/main.nix` — absolute, if `hostname` is Some
 ///
 /// Written to `/etc/nixos/configuration.nix` (standard NixOS location).
 /// Profile imports (`<nixops3/profiles/...>`) resolve via `-I nixops3=<tree_dir>`
@@ -23,7 +23,7 @@ pub fn generate_configuration_nix(
     imports.push(format!("{}/roles/{}/main.nix", tree_dir.display(), role));
 
     if let Some(h) = hostname {
-        imports.push(format!("{}/roles/{}/{}/main.nix", tree_dir.display(), role, h));
+        imports.push(format!("{}/roles/{}/hosts/{}/main.nix", tree_dir.display(), role, h));
     }
 
     let import_lines: Vec<String> = imports.iter().map(|p| format!("    {p}")).collect();
@@ -71,7 +71,7 @@ mod tests {
             .find(&format!("/roles/{ROLE}/main.nix"))
             .expect("role import present");
         let host_idx = out
-            .find(&format!("/roles/{ROLE}/{HOST}/main.nix"))
+            .find(&format!("/roles/{ROLE}/hosts/{HOST}/main.nix"))
             .expect("host import present");
         assert!(host_idx > role_idx, "host must come after role");
     }

@@ -15,9 +15,15 @@ s3://<bucket>/
         <environment>/                        # "production", "staging"
           <role>/                             # "webserver", "generic_node"
             main.nix                          # role entry point
+            main.yaml                         # role metadata (optional)
             canary.txt                        # optional; role-scoped gate (spec 03)
-            <fqdn>/                           # optional host directory
-              main.nix                        # host-specific overrides
+            files/                            # static files (referenced via builtins.readFile)
+            templates/                        # nix-interpolated files (convention, no daemon logic)
+            hosts/                            # per-host overrides (optional)
+              <fqdn>/
+                main.nix                      # host-specific NixOS overrides
+                main.yaml                     # host-specific metadata (optional)
+                files/                        # host-specific static files
 ```
 
 Only two things live at the bucket root: the mutable `current` pointer and
@@ -53,7 +59,8 @@ CI built from — human-readable, greppable, `git show`-able.
 - `profiles/*.nix` — profile modules importable by roles
 - `roles/<abstraction>/<environment>/<role>/main.nix` — role entry point
 - `roles/<abstraction>/<environment>/<role>/canary.txt` — optional gate
-- `roles/<abstraction>/<environment>/<role>/<fqdn>/main.nix` — host overrides (optional)
+- `roles/<abstraction>/<environment>/<role>/files/` — static files (see below)
+- `roles/<abstraction>/<environment>/<role>/hosts/<fqdn>/main.nix` — host overrides (optional)
 
 ## CI Publish Contract
 
@@ -83,11 +90,14 @@ interpret its semantics; it treats the concatenated path as an S3 prefix.
 
 ## Magic Filenames
 
-| Filename | Location | Purpose |
-|----------|----------|---------|
+| Filename / Dir | Location | Purpose |
+|----------------|----------|---------|
 | `main.nix` | role dir, host dir | NixOS config entry point |
 | `main.yaml` | role dir, host dir | Role/host metadata: pin, queries (see spec 08) |
 | `canary.txt` | role dir | Role-scoped canary gate (see spec 03) |
+| `files/` | role dir, host dir | Static files; referenced by `.nix` via `builtins.readFile` |
+| `templates/` | role dir, host dir | Nix-interpolated files; convention only, no daemon logic |
+| `hosts/` | role dir | Container for per-host subdirectories |
 
 Anything else in the tree is downloaded but has no special meaning to the daemon.
 
@@ -121,10 +131,27 @@ so these imports resolve to the current commit tree. See spec 02.
 Every apply cycle considers:
 
 1. `commits/<sha>/roles/<role>/main.nix` — role entry point (required)
-2. `commits/<sha>/roles/<role>/<hostname>/main.nix` — host overrides (optional)
+2. `commits/<sha>/roles/<role>/hosts/<hostname>/main.nix` — host overrides (optional)
 
 The daemon's generated `configuration.nix` imports both from the local
 extraction of the commit tree.
+
+## files/ and templates/ Convention
+
+`files/` and `templates/` are naming conventions for the Nix layer, not
+interpreted by the daemon. The daemon syncs the full commit tree; `.nix`
+files then reference these paths via standard Nix built-ins:
+
+```nix
+# In a role's main.nix — reference a file next to it in S3:
+configFile = pkgs.writeText "app-config" (builtins.readFile ./files/config.yaml);
+```
+
+`templates/` holds `.nix` files whose content is parameterised with Nix
+string interpolation rather than copied verbatim. The distinction is
+documentation-level only; both live in the same synced tree.
+
+Host-level `files/` works the same way from within `hosts/<fqdn>/main.nix`.
 
 ## NixOS Import Conventions
 

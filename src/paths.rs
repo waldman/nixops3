@@ -24,7 +24,7 @@ pub fn commit_role_main(sha: &str, role: &str) -> String {
 
 /// Host-scoped main.nix inside the commit tree.
 pub fn commit_host_main(sha: &str, role: &str, hostname: &str) -> String {
-    format!("commits/{sha}/roles/{role}/{hostname}/main.nix")
+    format!("commits/{sha}/roles/{role}/hosts/{hostname}/main.nix")
 }
 
 /// Role-scoped queries.toml.
@@ -34,7 +34,7 @@ pub fn commit_role_queries(sha: &str, role: &str) -> String {
 
 /// Host-scoped queries.toml.
 pub fn commit_host_queries(sha: &str, role: &str, hostname: &str) -> String {
-    format!("commits/{sha}/roles/{role}/{hostname}/queries.toml")
+    format!("commits/{sha}/roles/{role}/hosts/{hostname}/queries.toml")
 }
 
 /// Secrets Manager prefix for role-level (shared) secrets. Not commit-scoped.
@@ -77,7 +77,7 @@ mod tests {
     fn test_2_4_host_main() {
         assert_eq!(
             commit_host_main(SHA, ROLE, HOST),
-            "commits/abc1234/roles/home/production/webserver/web-01.waldman.internal/main.nix"
+            "commits/abc1234/roles/home/production/webserver/hosts/web-01.waldman.internal/main.nix"
         );
     }
 

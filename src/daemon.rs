@@ -159,7 +159,7 @@ pub async fn run_cycle(
     // Step 10: Generate configuration.nix at the standard NixOS location
     let has_hw_config = hw_path.exists();
     let host_arg = if tree_dir
-        .join(format!("roles/{}/{}/main.nix", config.role, hostname))
+        .join(format!("roles/{}/hosts/{}/main.nix", config.role, hostname))
         .exists()
     {
         Some(hostname)
@@ -233,7 +233,7 @@ fn pin_info(res: &PinResolution) -> PinInfo<'_> {
 /// (most-specific-wins per top-level key, in order fleet → role → host).
 fn load_main_yaml(tree_dir: &Path, role: &str, hostname: &str) -> Result<MainYaml> {
     let role_dir = tree_dir.join(format!("roles/{role}"));
-    let host_dir = role_dir.join(hostname);
+    let host_dir = role_dir.join("hosts").join(hostname);
     let fleet_yaml = MainYaml::read_optional(tree_dir)?;
     let role_yaml = MainYaml::read_optional(&role_dir)?;
     let host_yaml = MainYaml::read_optional(&host_dir)?;

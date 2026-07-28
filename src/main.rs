@@ -15,8 +15,9 @@ use nixops3d::timer::sleep_duration;
 use nixops3d::types::CycleOutcome;
 
 const CONFIG_PATH: &str = "/etc/nixops3/nixops3.toml";
-const WORK_DIR: &str = "/var/lib/nixops3/current";
-const HASH_PATH: &str = "/run/nixops3/last-hash";
+const VAR_DIR: &str = "/var/lib/nixops3";
+const CURRENT_PATH: &str = "/var/lib/nixops3/current";
+const NIXOS_DIR: &str = "/etc/nixos";
 const SECRETS_DIR: &str = "/run/nixops3/secrets";
 
 #[tokio::main]
@@ -67,7 +68,6 @@ async fn run_bootstrap(args: &[String]) -> Result<()> {
         info!("hostname set to {}", h);
     }
 
-    // Write config file — nixops3d owns this from here on
     write_toml(&bucket, &region, &role, table.as_deref(), ttl_days,
                access_key.as_deref(), secret_key.as_deref())?;
 
@@ -79,23 +79,22 @@ async fn run_bootstrap(args: &[String]) -> Result<()> {
 
     info!("bootstrap: hostname={}, role={}", hostname, config.role);
 
-    // Create runtime dirs (systemd RuntimeDirectory handles this in daemon mode)
-    let work_dir    = Path::new(WORK_DIR);
-    let hash_path   = Path::new(HASH_PATH);
-    let secrets_dir = Path::new(SECRETS_DIR);
-    std::fs::create_dir_all(work_dir)?;
-    std::fs::create_dir_all(secrets_dir)?;
-    std::fs::set_permissions(secrets_dir, std::fs::Permissions::from_mode(0o700))?;
+    prepare_dirs()?;
 
     let (s3, dynamo_client, secrets_client) = build_clients(&config).await;
     let executor = ProcessExecutor;
     let dynamo: Option<&dyn nixops3d::traits::DynamoOps> =
         if config.inventory.enabled { Some(&dynamo_client) } else { None };
 
-    run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
-              &executor, work_dir, hash_path, secrets_dir).await;
+    let var_dir     = Path::new(VAR_DIR);
+    let current     = Path::new(CURRENT_PATH);
+    let nixos_dir   = Path::new(NIXOS_DIR);
+    let secrets_dir = Path::new(SECRETS_DIR);
 
-    info!("bootstrap complete — nixops3d service will take over");
+    run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
+              &executor, var_dir, current, nixos_dir, secrets_dir).await;
+
+    info!("bootstrap complete — nixops3 service will take over");
     Ok(())
 }
 
@@ -155,10 +154,12 @@ async fn run_oneshot() -> Result<()> {
     let hostname = get_fqdn()?;
     info!("oneshot: hostname={}, role={}", hostname, config.role);
 
-    let work_dir    = Path::new(WORK_DIR);
-    let hash_path   = Path::new(HASH_PATH);
+    prepare_dirs()?;
+
+    let var_dir     = Path::new(VAR_DIR);
+    let current     = Path::new(CURRENT_PATH);
+    let nixos_dir   = Path::new(NIXOS_DIR);
     let secrets_dir = Path::new(SECRETS_DIR);
-    std::fs::create_dir_all(work_dir)?;
 
     let (s3, dynamo_client, secrets_client) = build_clients(&config).await;
     let executor = ProcessExecutor;
@@ -166,10 +167,10 @@ async fn run_oneshot() -> Result<()> {
         if config.inventory.enabled { Some(&dynamo_client) } else { None };
 
     let outcome = run_cycle(&config, &hostname, &s3, dynamo, &secrets_client,
-                            &executor, work_dir, hash_path, secrets_dir).await;
+                            &executor, var_dir, current, nixos_dir, secrets_dir).await;
 
     match outcome {
-        CycleOutcome::Applied | CycleOutcome::HashUnchanged | CycleOutcome::CanarySkip => Ok(()),
+        CycleOutcome::Applied | CycleOutcome::NoOp | CycleOutcome::CanarySkip => Ok(()),
         CycleOutcome::S3Error | CycleOutcome::RebuildFailed =>
             Err(anyhow!("cycle failed: {:?}", outcome)),
     }
@@ -180,19 +181,21 @@ async fn run_oneshot() -> Result<()> {
 async fn run_daemon() -> Result<()> {
     let config = Config::from_file(CONFIG_PATH)?;
     let hostname = get_fqdn()?;
-    info!("starting nixops3d, hostname={}, role={}", hostname, config.role);
+    info!("starting nixops3, hostname={}, role={}", hostname, config.role);
 
-    let work_dir    = Path::new(WORK_DIR);
-    let hash_path   = Path::new(HASH_PATH);
+    prepare_dirs()?;
+
+    let var_dir     = Path::new(VAR_DIR);
+    let current     = Path::new(CURRENT_PATH);
+    let nixos_dir   = Path::new(NIXOS_DIR);
     let secrets_dir = Path::new(SECRETS_DIR);
-    std::fs::create_dir_all(work_dir)?;
 
     let (s3, dynamo_client, secrets_client) = build_clients(&config).await;
     let executor = ProcessExecutor;
     let dynamo: Option<&dyn nixops3d::traits::DynamoOps> =
         if config.inventory.enabled { Some(&dynamo_client) } else { None };
 
-    let mut first_boot = !hash_path.exists();
+    let mut first_boot = !current.exists();
 
     loop {
         if !first_boot {
@@ -208,11 +211,21 @@ async fn run_daemon() -> Result<()> {
         };
 
         run_cycle(&cycle_config, &hostname, &s3, dynamo, &secrets_client,
-                  &executor, work_dir, hash_path, secrets_dir).await;
+                  &executor, var_dir, current, nixos_dir, secrets_dir).await;
     }
 }
 
 // ── shared helpers ───────────────────────────────────────────────────────────
+
+fn prepare_dirs() -> Result<()> {
+    let var_dir     = Path::new(VAR_DIR);
+    let secrets_dir = Path::new(SECRETS_DIR);
+    std::fs::create_dir_all(var_dir)?;
+    std::fs::create_dir_all(var_dir.join("commits"))?;
+    std::fs::create_dir_all(secrets_dir)?;
+    std::fs::set_permissions(secrets_dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
 
 async fn build_clients(config: &Config)
     -> (AwsS3Client, AwsDynamoClient, AwsSecretsClient)

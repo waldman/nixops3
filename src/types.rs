@@ -27,10 +27,15 @@ impl LastRunStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CycleOutcome {
+    /// Applied a new commit and advanced the symlink.
     Applied,
+    /// Symlink already pointed at the target sha; nothing to do.
+    NoOp,
+    /// Canary gate rejected this host.
     CanarySkip,
-    HashUnchanged,
+    /// Failed to resolve the pointer or fetch the tree.
     S3Error,
+    /// `nixos-rebuild` returned non-zero; symlink not advanced.
     RebuildFailed,
 }
 

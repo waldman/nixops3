@@ -1,14 +1,24 @@
 use anyhow::Result;
+use crate::paths::commit_canary;
 use crate::traits::S3Ops;
 
 /// Returns `true` if the daemon should apply (proceed), `false` to skip.
 ///
-/// Logic:
-/// - `canary.txt` absent → apply
-/// - `canary.txt` present and hostname listed → apply
-/// - `canary.txt` present and hostname NOT listed → skip
-pub async fn check_canary(s3: &dyn S3Ops, hostname: &str) -> Result<bool> {
-    match s3.get_object("canary.txt").await? {
+/// Canary is role-scoped and per-commit. The daemon fetches:
+///     commits/<sha>/roles/<role>/canary.txt
+///
+/// Semantics:
+/// - Absent (404) → apply
+/// - Present, hostname listed → apply
+/// - Present, hostname NOT listed → skip
+pub async fn check_canary(
+    s3: &dyn S3Ops,
+    sha: &str,
+    role: &str,
+    hostname: &str,
+) -> Result<bool> {
+    let key = commit_canary(sha, role);
+    match s3.get_object(&key).await? {
         None => Ok(true),
         Some(bytes) => {
             let content = String::from_utf8_lossy(&bytes);
@@ -41,9 +51,13 @@ mod tests {
         }
     }
 
-    fn s3_with(key: &str, content: &str) -> MockS3 {
+    const SHA: &str = "abc1234";
+    const ROLE: &str = "home/production/webserver";
+    const HOST: &str = "web-01.waldman.internal";
+
+    fn s3_with(content: &str) -> MockS3 {
         let mut m = HashMap::new();
-        m.insert(key.to_string(), content.as_bytes().to_vec());
+        m.insert(commit_canary(SHA, ROLE), content.as_bytes().to_vec());
         MockS3(m)
     }
 
@@ -53,48 +67,48 @@ mod tests {
 
     #[tokio::test]
     async fn test_4_1_no_canary_file() {
-        assert!(check_canary(&s3_empty(), "ada-01.waldman.internal").await.unwrap());
+        assert!(check_canary(&s3_empty(), SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_4_2_hostname_in_canary() {
-        let s3 = s3_with("canary.txt", "ada-01.waldman.internal\n");
-        assert!(check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+    async fn test_4_2_hostname_listed() {
+        let s3 = s3_with(&format!("{HOST}\n"));
+        assert!(check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_4_3_hostname_not_in_canary() {
-        let s3 = s3_with("canary.txt", "ada-02.waldman.internal\n");
-        assert!(!check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+    async fn test_4_3_hostname_not_listed() {
+        let s3 = s3_with("web-02.waldman.internal\n");
+        assert!(!check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_4_4_empty_canary_all_skip() {
-        let s3 = s3_with("canary.txt", "");
-        assert!(!check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+    async fn test_4_4_empty_all_skip() {
+        assert!(!check_canary(&s3_with(""), SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_4_5_partial_match_not_accepted() {
-        let s3 = s3_with("canary.txt", "ada-01\n");
-        assert!(!check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+    async fn test_4_5_partial_match_rejected() {
+        let s3 = s3_with("web-01\n");
+        assert!(!check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
-    async fn test_4_6_comment_lines_ignored() {
-        let s3 = s3_with("canary.txt", "# comment\nada-01.waldman.internal\n");
-        assert!(check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+    async fn test_4_6_comments_ignored() {
+        let s3 = s3_with(&format!("# comment\n{HOST}\n"));
+        assert!(check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
     async fn test_4_7_blank_lines_ignored() {
-        let s3 = s3_with("canary.txt", "\n\nada-01.waldman.internal\n\n");
-        assert!(check_canary(&s3, "ada-01.waldman.internal").await.unwrap());
+        let s3 = s3_with(&format!("\n\n{HOST}\n\n"));
+        assert!(check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
     #[tokio::test]
     async fn test_4_8_multiple_hostnames() {
-        let s3 = s3_with("canary.txt", "ada-01.waldman.internal\nada-02.waldman.internal\n");
-        assert!(check_canary(&s3, "ada-02.waldman.internal").await.unwrap());
+        let s3 = s3_with(&format!("web-01.waldman.internal\n{HOST}\n"));
+        let host2 = "web-02.waldman.internal";
+        assert!(check_canary(&s3, SHA, ROLE, host2).await.is_ok());
     }
 }

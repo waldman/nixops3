@@ -1,16 +1,19 @@
 use anyhow::Result;
+use fs2::FileExt;
 use std::path::Path;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::canary::check_canary;
 use crate::config::Config;
-use crate::hash::compute_hash;
 use crate::inventory::{run_queries, write_heartbeat, write_inventory};
 use crate::nixgen::generate_configuration_nix;
-use crate::paths::{host_main_nix, host_queries_toml, role_main_nix, role_queries_toml};
+use crate::paths::POINTER_KEY;
+use crate::pointer;
 use crate::queries::{merge_queries, parse_queries};
 use crate::secrets::fetch_secrets;
+use crate::symlink;
 use crate::traits::{DynamoOps, Executor, S3Ops, SecretsOps};
+use crate::tree;
 use crate::types::{CycleOutcome, LastRunStatus};
 
 pub async fn run_cycle(
@@ -20,84 +23,80 @@ pub async fn run_cycle(
     dynamo: Option<&dyn DynamoOps>,
     secrets: &dyn SecretsOps,
     executor: &dyn Executor,
-    work_dir: &Path,
-    hash_path: &Path,
+    var_dir: &Path,
+    current_path: &Path,
+    nixos_dir: &Path,
     secrets_dir: &Path,
 ) -> CycleOutcome {
     info!("poll cycle started for hostname={}", hostname);
 
-    // Step 1: Canary check
-    match check_canary(s3, hostname).await {
-        Ok(true) => {}
-        Ok(false) => {
-            info!("canary active, hostname not listed — skipping");
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::CanarySkip, executor).await;
-            return CycleOutcome::CanarySkip;
-        }
-        Err(e) => {
-            error!("canary check failed: {}", e);
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
-            return CycleOutcome::S3Error;
-        }
+    let commits_dir = var_dir.join("commits");
+    if let Err(e) = std::fs::create_dir_all(&commits_dir) {
+        error!("failed to create commits dir: {}", e);
+        write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, "", "", executor).await;
+        return CycleOutcome::S3Error;
     }
 
-    // Step 2: Download config tree (two-pass)
-    let download = download_config_tree(s3, config, hostname).await;
-    let (files, has_host, query_contents) = match download {
-        Ok(v) => v,
+    let hw_path = nixos_dir.join("hardware-configuration.nix");
+    let nixos_config_path = nixos_dir.join("configuration.nix");
+    let lock_path = var_dir.join(".lock");
+
+    // Cross-process serialization: prevents daemon + single-shot from racing.
+    let _lock = match acquire_lock(&lock_path) {
+        Ok(l) => l,
         Err(e) => {
-            error!("s3 download failed: {}", e);
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
+            error!("failed to acquire lock: {}", e);
             return CycleOutcome::S3Error;
         }
     };
 
-    // Step 3: Write downloaded files to work_dir
-    if let Err(e) = write_files_to_dir(&files, work_dir) {
-        error!("failed to write files to work_dir: {}", e);
-        write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
-        return CycleOutcome::S3Error;
+    // Clean up any orphaned .tmp-* dirs from a crashed prior run.
+    tree::cleanup_tmp_dirs(&commits_dir);
+
+    let applied = symlink::read_current(current_path).unwrap_or_default();
+
+    // Step 1: Resolve pointer
+    let target = match resolve_pointer(s3).await {
+        Ok(t) => t,
+        Err(e) => {
+            error!("failed to resolve pointer: {}", e);
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, "", executor).await;
+            return CycleOutcome::S3Error;
+        }
+    };
+
+    // Step 2: No-op if symlink already at target
+    if applied == target {
+        debug!("target sha unchanged ({}) — no-op", target);
+        write_heartbeat(config, hostname, dynamo, LastRunStatus::Ok, &applied, &target, executor).await;
+        return CycleOutcome::NoOp;
     }
 
-    // Step 4: Compute hash of .nix files
-    let new_hash = compute_hash(&files);
-
-    // Step 5: Read existing hash
-    let old_hash = std::fs::read_to_string(hash_path).unwrap_or_default();
-
-    // Step 6: If unchanged, skip
-    if new_hash == old_hash {
-        info!("hash unchanged — skipping rebuild");
-        write_heartbeat(config, hostname, dynamo, LastRunStatus::Ok, executor).await;
-        return CycleOutcome::HashUnchanged;
-    }
-
-    // Step 7: Inventory queries (if enabled)
-    if config.inventory.enabled {
-        if let (Some(dynamo_ref), Some(table)) = (dynamo, &config.inventory.table) {
-            let query_lists: Vec<_> = query_contents
-                .iter()
-                .filter_map(|content| parse_queries(content).ok())
-                .collect();
-            let queries = merge_queries(&query_lists);
-            let query_results = run_queries(&queries, dynamo_ref, table).await;
-            let inv_path = Path::new("/var/lib/nixops3/inventory.json");
-            if let Err(e) = write_inventory(&query_results, inv_path) {
-                error!("failed to write inventory.json: {}", e);
-            }
+    // Step 3: Canary gate — role-scoped, per-commit
+    match check_canary(s3, &target, &config.role, hostname).await {
+        Ok(true) => {}
+        Ok(false) => {
+            info!("canary active, hostname not listed — skipping");
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::CanarySkip, &applied, &target, executor).await;
+            return CycleOutcome::CanarySkip;
+        }
+        Err(e) => {
+            error!("canary check failed: {}", e);
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
+            return CycleOutcome::S3Error;
         }
     }
 
-    // Step 8: Fetch secrets
-    if let Err(e) = fetch_secrets(secrets, &config.role, hostname, secrets_dir).await {
-        error!("secrets fetch error: {}", e);
+    // Step 4: Ensure the commit tree is local
+    if let Err(e) = tree::ensure_local(s3, &commits_dir, &target).await {
+        error!("s3 tree fetch failed: {}", e);
+        write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
+        return CycleOutcome::S3Error;
     }
+    let tree_dir = commits_dir.join(&target);
 
-    // Step 9: Generate configuration.nix
-    // Ensure hardware-configuration.nix exists; nixos-generate-config creates it on
-    // fresh machines that were not installed via the standard NixOS installer.
-    let hw_config_path = Path::new("/etc/nixos/hardware-configuration.nix");
-    if !hw_config_path.exists() {
+    // Step 5: Ensure hardware config exists
+    if !hw_path.exists() {
         info!("hardware-configuration.nix absent — running nixos-generate-config");
         match executor.run("nixos-generate-config", &[]) {
             Ok((0, _)) => info!("nixos-generate-config succeeded"),
@@ -105,25 +104,55 @@ pub async fn run_cycle(
             Err(e) => error!("nixos-generate-config failed to launch: {}", e),
         }
     }
-    let host_arg = if has_host { Some(hostname) } else { None };
-    let has_hw_config = hw_config_path.exists();
-    let config_nix = generate_configuration_nix(&config.role, host_arg, has_hw_config);
-    let config_nix_path = work_dir.join("configuration.nix");
-    if let Err(e) = std::fs::write(&config_nix_path, &config_nix) {
-        error!("failed to write configuration.nix: {}", e);
-        write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
+
+    // Step 6: Inventory queries (if enabled)
+    if config.inventory.enabled {
+        if let (Some(dynamo_ref), Some(table)) = (dynamo, &config.inventory.table) {
+            let query_contents = collect_queries_from_tree(&tree_dir, &config.role, hostname);
+            let query_lists: Vec<_> = query_contents
+                .iter()
+                .filter_map(|content| parse_queries(content).ok())
+                .collect();
+            let queries = merge_queries(&query_lists);
+            let query_results = run_queries(&queries, dynamo_ref, table).await;
+            let inv_path = var_dir.join("inventory.json");
+            if let Err(e) = write_inventory(&query_results, &inv_path) {
+                error!("failed to write inventory.json: {}", e);
+            }
+        }
+    }
+
+    // Step 7: Fetch secrets
+    if let Err(e) = fetch_secrets(secrets, &config.role, hostname, secrets_dir).await {
+        error!("secrets fetch error: {}", e);
+    }
+
+    // Step 8: Generate configuration.nix at the standard NixOS location
+    let has_hw_config = hw_path.exists();
+    let host_arg = if tree_dir
+        .join(format!("roles/{}/{}/main.nix", config.role, hostname))
+        .exists()
+    {
+        Some(hostname)
+    } else {
+        None
+    };
+    let config_nix = generate_configuration_nix(&tree_dir, &config.role, host_arg, has_hw_config);
+    if let Some(parent) = nixos_config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&nixos_config_path, &config_nix) {
+        error!("failed to write {}: {}", nixos_config_path.display(), e);
+        write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
         return CycleOutcome::S3Error;
     }
 
-    // Step 10: Run nixos-rebuild
-    // -I nixops3=<work_dir> lets role main.nix use <nixops3/profiles/...> imports
-    // -I nixpkgs=<path>     ensures nixpkgs is findable even when NIX_PATH is stripped
-    let nixos_config_arg = format!("nixos-config={}", work_dir.join("configuration.nix").display());
-    let nixops3_arg = format!("nixops3={}", work_dir.display());
-    let mut args = vec!["switch", "-I", &nixos_config_arg, "-I", &nixops3_arg];
+    // Step 9: Run nixos-rebuild — no -I nixos-config= (default location used)
+    let nixops3_arg = format!("nixops3={}", tree_dir.display());
+    let mut args: Vec<&str> = vec!["switch", "-I", &nixops3_arg];
     let nixpkgs_arg;
     if let Some(nixpkgs) = find_nixpkgs() {
-        nixpkgs_arg = format!("nixpkgs={}", nixpkgs);
+        nixpkgs_arg = format!("nixpkgs={nixpkgs}");
         args.push("-I");
         args.push(&nixpkgs_arg);
     }
@@ -132,120 +161,76 @@ pub async fn run_cycle(
     match executor.run("nixos-rebuild", &args) {
         Ok((0, _)) => {
             info!("apply succeeded");
-            if let Err(e) = std::fs::write(hash_path, &new_hash) {
-                error!("failed to write hash: {}", e);
+            // Step 10: advance the symlink atomically
+            if let Err(e) = symlink::advance(current_path, &target) {
+                error!("failed to advance symlink: {}", e);
+                write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
+                return CycleOutcome::RebuildFailed;
             }
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::Ok, executor).await;
+            info!("symlink advanced: current -> commits/{}", target);
+            tree::prune(&commits_dir, config.trees_retain, &target);
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::Ok, &target, &target, executor).await;
             CycleOutcome::Applied
         }
         Ok((code, output)) => {
             error!("apply failed (exit {}): {}", code, output);
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
             CycleOutcome::RebuildFailed
         }
         Err(e) => {
             error!("apply failed to launch: {}", e);
-            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, executor).await;
+            write_heartbeat(config, hostname, dynamo, LastRunStatus::Failed, &applied, &target, executor).await;
             CycleOutcome::RebuildFailed
         }
     }
 }
 
-/// Two-pass download of the config tree.
-///
-/// Pass 1: fetch role `main.nix` and host `main.nix`. Scan both for `<nixops3/...>`
-///         path references to discover which profiles are needed.
-/// Pass 2: fetch exactly those profile files.
-///
-/// Returns `(files, has_host_main_nix, query_toml_contents)`.
-async fn download_config_tree(
-    s3: &dyn S3Ops,
-    config: &Config,
-    hostname: &str,
-) -> Result<(Vec<(String, Vec<u8>)>, bool, Vec<String>)> {
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut query_contents: Vec<String> = Vec::new();
-
-    // Pass 1 — role main.nix
-    let role_main = role_main_nix(&config.role);
-    let role_bytes = s3.get_object(&role_main).await?;
-
-    // Pass 1 — host main.nix (optional)
-    let host_main = host_main_nix(&config.role, hostname);
-    let host_bytes = s3.get_object(&host_main).await?;
-    let has_host = host_bytes.is_some();
-
-    // Scan both for <nixops3/...> imports
-    let mut profile_keys: Vec<String> = Vec::new();
-    if let Some(ref bytes) = role_bytes {
-        for key in extract_nixops3_imports(&String::from_utf8_lossy(bytes)) {
-            if !profile_keys.contains(&key) {
-                profile_keys.push(key);
-            }
-        }
-    }
-    if let Some(ref bytes) = host_bytes {
-        for key in extract_nixops3_imports(&String::from_utf8_lossy(bytes)) {
-            if !profile_keys.contains(&key) {
-                profile_keys.push(key);
-            }
-        }
-    }
-
-    // Pass 2 — fetch referenced profiles
-    for key in profile_keys {
-        if let Some(bytes) = s3.get_object(&key).await? {
-            files.push((key, bytes));
-        }
-    }
-
-    // Add main.nix files after profiles (order doesn't affect hash — sorted by key)
-    if let Some(bytes) = role_bytes {
-        files.push((role_main, bytes));
-    }
-    if let Some(bytes) = host_bytes {
-        files.push((host_main, bytes));
-    }
-
-    // queries.toml files
-    let role_qt = role_queries_toml(&config.role);
-    if let Some(bytes) = s3.get_object(&role_qt).await? {
-        if let Ok(s) = String::from_utf8(bytes.clone()) {
-            query_contents.push(s);
-        }
-        files.push((role_qt, bytes));
-    }
-
-    let host_qt = host_queries_toml(&config.role, hostname);
-    if let Some(bytes) = s3.get_object(&host_qt).await? {
-        if let Ok(s) = String::from_utf8(bytes.clone()) {
-            query_contents.push(s);
-        }
-        files.push((host_qt, bytes));
-    }
-
-    Ok((files, has_host, query_contents))
+/// GET `current` from S3, validate as 40-char hex sha.
+async fn resolve_pointer(s3: &dyn S3Ops) -> Result<String> {
+    let bytes = s3
+        .get_object(POINTER_KEY)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("`current` pointer not found in bucket"))?;
+    let raw = String::from_utf8(bytes)?;
+    pointer::parse(&raw)
 }
 
-/// Extracts `<nixops3/...>` path references from a Nix source file.
-/// Returns S3 keys (the path inside the angle brackets).
-fn extract_nixops3_imports(content: &str) -> Vec<String> {
-    let prefix = "<nixops3/";
-    let mut paths = Vec::new();
-    let mut rest = content;
-    while let Some(start) = rest.find(prefix) {
-        rest = &rest[start + prefix.len()..];
-        if let Some(end) = rest.find('>') {
-            let path = rest[..end].trim().to_string();
-            if !path.is_empty() && !paths.contains(&path) {
-                paths.push(path);
-            }
-            rest = &rest[end + 1..];
-        } else {
-            break;
-        }
+/// Read queries.toml files from the local commit tree.
+fn collect_queries_from_tree(tree_dir: &Path, role: &str, hostname: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Role-level (rebuild path relative to tree_dir root)
+    let role_qt = tree_dir.join(commit_role_queries_relpath(role));
+    if let Ok(s) = std::fs::read_to_string(&role_qt) {
+        out.push(s);
     }
-    paths
+    // Host-level
+    let host_qt = tree_dir.join(commit_host_queries_relpath(role, hostname));
+    if let Ok(s) = std::fs::read_to_string(&host_qt) {
+        out.push(s);
+    }
+    out
+}
+
+fn commit_role_queries_relpath(role: &str) -> String {
+    format!("roles/{role}/queries.toml")
+}
+
+fn commit_host_queries_relpath(role: &str, hostname: &str) -> String {
+    format!("roles/{role}/{hostname}/queries.toml")
+}
+
+/// Acquire the process-serialization lock. Blocking (blocks until acquired).
+fn acquire_lock(lock_path: &Path) -> Result<std::fs::File> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)?;
+    f.lock_exclusive()?;
+    Ok(f)
 }
 
 /// Finds the nixpkgs path so it can be passed as `-I nixpkgs=...` to nixos-rebuild.
@@ -290,50 +275,4 @@ fn find_nixpkgs() -> Option<String> {
     }
 
     None
-}
-
-fn write_files_to_dir(files: &[(String, Vec<u8>)], dir: &Path) -> Result<()> {
-    for (key, bytes) in files {
-        let dest = dir.join(key);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&dest, bytes)?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_no_imports() {
-        assert!(extract_nixops3_imports("{ ... }: {}").is_empty());
-    }
-
-    #[test]
-    fn test_extract_single_import() {
-        let nix = r#"{ ... }: { imports = [ <nixops3/profiles/base.nix> ]; }"#;
-        assert_eq!(extract_nixops3_imports(nix), vec!["profiles/base.nix"]);
-    }
-
-    #[test]
-    fn test_extract_multiple_imports() {
-        let nix = r#"
-            imports = [
-                <nixops3/profiles/base.nix>
-                <nixops3/profiles/docker.nix>
-            ];
-        "#;
-        let result = extract_nixops3_imports(nix);
-        assert_eq!(result, vec!["profiles/base.nix", "profiles/docker.nix"]);
-    }
-
-    #[test]
-    fn test_extract_deduplicates() {
-        let nix = "<nixops3/profiles/base.nix> <nixops3/profiles/base.nix>";
-        let result = extract_nixops3_imports(nix);
-        assert_eq!(result, vec!["profiles/base.nix"]);
-    }
 }

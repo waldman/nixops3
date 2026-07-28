@@ -52,11 +52,17 @@ pub fn write_inventory(queries_result: &HashMap<String, Value>, path: &Path) -> 
 }
 
 /// Writes a heartbeat item to DynamoDB.
+///
+/// `applied_sha` is the current symlink target basename (empty string if the
+/// symlink doesn't yet exist). `target_sha` is what the daemon resolved from
+/// `s3://<bucket>/current` this cycle (empty string if the resolve failed).
 pub async fn write_heartbeat(
     config: &Config,
     hostname: &str,
     dynamo: Option<&dyn DynamoOps>,
     status: LastRunStatus,
+    applied_sha: &str,
+    target_sha: &str,
     executor: &dyn Executor,
 ) {
     let dynamo = match dynamo {
@@ -91,6 +97,8 @@ pub async fn write_heartbeat(
     item.insert("iface".into(), DynVal::S(iface));
     item.insert("ip".into(), DynVal::S(ip));
     item.insert("network".into(), DynVal::S(network));
+    item.insert("applied_sha".into(), DynVal::S(applied_sha.to_string()));
+    item.insert("target_sha".into(), DynVal::S(target_sha.to_string()));
     item.insert("last_run_status".into(), DynVal::S(status.as_str().to_string()));
     item.insert("last_seen".into(), DynVal::S(last_seen));
     item.insert("ttl".into(), DynVal::N(ttl.to_string()));

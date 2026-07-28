@@ -7,6 +7,7 @@ struct RawConfig {
     region: String,
     role: String,
     poll_interval_secs: Option<u64>,
+    trees_retain: Option<usize>,
     aws: Option<AwsCredentials>,
     inventory: Option<InventoryConfig>,
 }
@@ -30,6 +31,7 @@ pub struct Config {
     pub region: String,
     pub role: String,
     pub poll_interval_secs: u64,
+    pub trees_retain: usize,
     pub aws: Option<AwsCredentials>,
     pub inventory: ResolvedInventory,
 }
@@ -51,6 +53,11 @@ impl Config {
             return Err(anyhow!("poll_interval_secs must be > 0"));
         }
 
+        let trees_retain = raw.trees_retain.unwrap_or(5);
+        if trees_retain == 0 {
+            return Err(anyhow!("trees_retain must be > 0"));
+        }
+
         let inventory = match raw.inventory {
             None => ResolvedInventory { enabled: false, table: None, ttl_secs: None },
             Some(inv) => {
@@ -67,6 +74,7 @@ impl Config {
             region: raw.region,
             role: raw.role,
             poll_interval_secs,
+            trees_retain,
             aws: raw.aws,
             inventory,
         })
@@ -120,8 +128,22 @@ table   = "nixops3-inventory"
     fn test_1_2_valid_minimal_config() {
         let cfg = Config::from_toml(minimal()).unwrap();
         assert_eq!(cfg.poll_interval_secs, 600);
+        assert_eq!(cfg.trees_retain, 5);
         assert!(!cfg.inventory.enabled);
         assert!(cfg.aws.is_none());
+    }
+
+    #[test]
+    fn test_1_9_trees_retain_custom() {
+        let toml = format!("{}\ntrees_retain = 10", minimal());
+        let cfg = Config::from_toml(&toml).unwrap();
+        assert_eq!(cfg.trees_retain, 10);
+    }
+
+    #[test]
+    fn test_1_9b_trees_retain_zero_rejected() {
+        let toml = format!("{}\ntrees_retain = 0", minimal());
+        assert!(Config::from_toml(&toml).is_err());
     }
 
     #[test]

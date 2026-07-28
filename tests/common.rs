@@ -2,28 +2,29 @@ use anyhow::Result;
 use async_trait::async_trait;
 use nixops3d::config::Config;
 use nixops3d::daemon::run_cycle;
-use nixops3d::hash::compute_hash;
 use nixops3d::traits::{DynamoOps, Executor, S3Ops, SecretsOps};
 use nixops3d::types::{CycleOutcome, DynVal, InventoryItem};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
+// Test constants — deterministic 40-char hex shas
+pub const TEST_SHA: &str = "abcdef1234567890abcdef1234567890abcdef12";
+pub const TEST_SHA_2: &str = "1234567890abcdef1234567890abcdef12345678";
+pub const TEST_ROLE: &str = "home/production/webserver";
+pub const TEST_HOST: &str = "web-01.waldman.internal";
+
 // ─── MockS3 ──────────────────────────────────────────────────────────────────
 
 pub struct MockS3 {
     pub files: HashMap<String, Vec<u8>>,
     pub fail_get: bool,
+    pub fail_get_key: Option<String>,
 }
 
 impl MockS3 {
     pub fn new(files: HashMap<String, Vec<u8>>) -> Self {
-        Self { files, fail_get: false }
-    }
-
-    pub fn with_get_error(mut self) -> Self {
-        self.fail_get = true;
-        self
+        Self { files, fail_get: false, fail_get_key: None }
     }
 }
 
@@ -32,6 +33,11 @@ impl S3Ops for MockS3 {
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if self.fail_get {
             anyhow::bail!("mock S3 get error");
+        }
+        if let Some(ref k) = self.fail_get_key {
+            if key == k {
+                anyhow::bail!("mock S3 get error for key {}", key);
+            }
         }
         Ok(self.files.get(key).cloned())
     }
@@ -112,8 +118,8 @@ pub struct TestContext {
     pub dynamo: Arc<MockDynamo>,
     pub secrets: Arc<MockSecrets>,
     pub executor: Arc<MockExecutor>,
-    pub work_dir: TempDir,
-    pub hash_dir: TempDir,
+    pub var_dir: TempDir,
+    pub nixos_dir: TempDir,
     pub secrets_dir: TempDir,
 }
 
@@ -123,7 +129,13 @@ impl TestContext {
     }
 
     pub async fn run_cycle(&self) -> CycleOutcome {
-        let hash_path = self.hash_dir.path().join("last-hash");
+        let current_path = self.var_dir.path().join("current");
+        // Pre-create hardware-configuration.nix stub in nixos_dir so the
+        // daemon doesn't try to invoke nixos-generate-config in tests.
+        let hw = self.nixos_dir.path().join("hardware-configuration.nix");
+        if !hw.exists() {
+            std::fs::write(&hw, "{ }").unwrap();
+        }
         run_cycle(
             &self.config,
             &self.hostname,
@@ -131,8 +143,9 @@ impl TestContext {
             Some(self.dynamo.as_ref()),
             self.secrets.as_ref(),
             self.executor.as_ref(),
-            self.work_dir.path(),
-            &hash_path,
+            self.var_dir.path(),
+            &current_path,
+            self.nixos_dir.path(),
             self.secrets_dir.path(),
         )
         .await
@@ -152,28 +165,29 @@ impl TestContext {
             .count()
     }
 
-    pub fn last_hash(&self) -> String {
-        let path = self.hash_dir.path().join("last-hash");
-        std::fs::read_to_string(path).unwrap_or_default()
+    pub fn symlink_target(&self) -> Option<String> {
+        let current = self.var_dir.path().join("current");
+        let target = std::fs::read_link(&current).ok()?;
+        target.file_name()?.to_str().map(|s| s.to_string())
     }
 
-    pub fn computed_hash(&self) -> String {
-        let mut files: Vec<(String, Vec<u8>)> = self
-            .s3
-            .files
-            .iter()
-            .filter(|(k, _)| k.ends_with(".nix"))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        compute_hash(&files)
+    pub fn dynamo_last_status(&self) -> String {
+        self.dynamo_field("last_run_status")
     }
 
-    pub fn dynamo_status(&self) -> String {
+    pub fn dynamo_last_applied_sha(&self) -> String {
+        self.dynamo_field("applied_sha")
+    }
+
+    pub fn dynamo_last_target_sha(&self) -> String {
+        self.dynamo_field("target_sha")
+    }
+
+    fn dynamo_field(&self, name: &str) -> String {
         let calls = self.dynamo.calls.lock().unwrap();
         calls
             .last()
-            .and_then(|m| m.get("last_run_status"))
+            .and_then(|m| m.get(name))
             .and_then(|v| if let DynVal::S(s) = v { Some(s.clone()) } else { None })
             .unwrap_or_default()
     }
@@ -182,14 +196,12 @@ impl TestContext {
         self.dynamo.calls.lock().unwrap().len()
     }
 
-    pub fn work_dir_file(&self, rel_path: &str) -> Option<String> {
-        let path = self.work_dir.path().join(rel_path);
-        std::fs::read_to_string(path).ok()
+    pub fn nixos_config_file(&self) -> Option<String> {
+        std::fs::read_to_string(self.nixos_dir.path().join("configuration.nix")).ok()
     }
 
     pub fn secret_file(&self, name: &str) -> Option<String> {
-        let path = self.secrets_dir.path().join(name);
-        std::fs::read_to_string(path).ok()
+        std::fs::read_to_string(self.secrets_dir.path().join(name)).ok()
     }
 }
 
@@ -197,8 +209,10 @@ impl TestContext {
 
 #[derive(Default)]
 pub struct TestContextBuilder {
+    s3_pointer: Option<String>,
     s3_files: HashMap<String, Vec<u8>>,
-    last_hash: Option<String>,
+    fail_get_key: Option<String>,
+    seed_symlink: Option<String>,
     rebuild_exit_code: i32,
     dynamo_error: bool,
     secrets: HashMap<String, String>,
@@ -209,13 +223,28 @@ pub struct TestContextBuilder {
 }
 
 impl TestContextBuilder {
+    pub fn s3_pointer(mut self, sha: impl Into<String>) -> Self {
+        self.s3_pointer = Some(sha.into());
+        self
+    }
+
     pub fn s3_file(mut self, key: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
         self.s3_files.insert(key.into(), content.into());
         self
     }
 
-    pub fn last_hash(mut self, h: impl Into<String>) -> Self {
-        self.last_hash = Some(h.into());
+    pub fn commit_file(
+        self,
+        sha: &str,
+        key: impl AsRef<str>,
+        content: impl Into<Vec<u8>>,
+    ) -> Self {
+        let full = format!("commits/{}/{}", sha, key.as_ref());
+        self.s3_file(full, content)
+    }
+
+    pub fn seed_symlink(mut self, sha: impl Into<String>) -> Self {
+        self.seed_symlink = Some(sha.into());
         self
     }
 
@@ -234,6 +263,7 @@ impl TestContextBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn hostname(mut self, h: impl Into<String>) -> Self {
         self.hostname = h.into();
         self
@@ -249,23 +279,32 @@ impl TestContextBuilder {
         self
     }
 
-    /// Makes all S3 get_object calls return an error (simulates S3 outage)
     pub fn s3_get_error(mut self) -> Self {
         self.s3_get_error = true;
         self
     }
 
-    pub fn build(self) -> TestContext {
+    #[allow(dead_code)]
+    pub fn fail_get_key(mut self, key: impl Into<String>) -> Self {
+        self.fail_get_key = Some(key.into());
+        self
+    }
+
+    pub fn build(mut self) -> TestContext {
         let hostname = if self.hostname.is_empty() {
-            "ada-01.waldman.internal".to_string()
+            TEST_HOST.to_string()
         } else {
             self.hostname
         };
 
+        if let Some(sha) = &self.s3_pointer {
+            self.s3_files.insert("current".to_string(), sha.as_bytes().to_vec());
+        }
+
         let config_toml = format!(
             r#"bucket = "test-bucket"
 region = "us-east-1"
-role = "home/production/ada"
+role = "{TEST_ROLE}"
 poll_interval_secs = 600
 {}
 "#,
@@ -277,10 +316,13 @@ poll_interval_secs = 600
         );
         let config = Config::from_toml(&config_toml).unwrap();
 
-        let s3 = Arc::new(if self.s3_get_error {
-            MockS3::new(self.s3_files).with_get_error()
-        } else {
-            MockS3::new(self.s3_files)
+        let s3 = Arc::new({
+            let mut m = MockS3::new(self.s3_files);
+            if self.s3_get_error {
+                m.fail_get = true;
+            }
+            m.fail_get_key = self.fail_get_key;
+            m
         });
 
         let dynamo = Arc::new(MockDynamo {
@@ -296,14 +338,32 @@ poll_interval_secs = 600
             exit_code: self.rebuild_exit_code,
         });
 
-        let work_dir = TempDir::new().unwrap();
-        let hash_dir = TempDir::new().unwrap();
+        let var_dir = TempDir::new().unwrap();
+        let nixos_dir = TempDir::new().unwrap();
         let secrets_dir = TempDir::new().unwrap();
 
-        if let Some(h) = self.last_hash {
-            std::fs::write(hash_dir.path().join("last-hash"), h).unwrap();
+        std::fs::create_dir_all(var_dir.path().join("commits")).unwrap();
+
+        if let Some(sha) = self.seed_symlink {
+            let commits_dir = var_dir.path().join("commits");
+            std::fs::create_dir_all(commits_dir.join(&sha)).unwrap();
+            std::os::unix::fs::symlink(
+                format!("commits/{sha}"),
+                var_dir.path().join("current"),
+            )
+            .unwrap();
         }
 
-        TestContext { config, hostname, s3, dynamo, secrets, executor, work_dir, hash_dir, secrets_dir }
+        TestContext {
+            config,
+            hostname,
+            s3,
+            dynamo,
+            secrets,
+            executor,
+            var_dir,
+            nixos_dir,
+            secrets_dir,
+        }
     }
 }

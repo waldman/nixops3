@@ -1,98 +1,123 @@
 mod common;
-use common::TestContext;
+use common::{TestContext, TEST_HOST, TEST_ROLE, TEST_SHA, TEST_SHA_2};
 use nixops3d::types::{CycleOutcome, InventoryItem};
 
-// ─── 9.1 Happy path — first run ───────────────────────────────────────────────
+// Helper: minimal S3 setup — pointer + a role main.nix inside the commit tree.
+fn baseline(builder: common::TestContextBuilder) -> common::TestContextBuilder {
+    builder
+        .s3_pointer(TEST_SHA)
+        .commit_file(TEST_SHA, "profiles/base.nix", "{ ... }: {}")
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/main.nix"),
+            "{ ... }: {}",
+        )
+}
+
+// ─── 12.1 Happy path — first run ─────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_9_1_happy_path_first_run() {
-    let main_nix = r#"{ ... }: { imports = [ <nixops3/profiles/base.nix> ]; }"#;
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("profiles/base.nix", "{ config, ... }: {}")
-        .s3_file("roles/home/production/ada/main.nix", main_nix)
+async fn test_12_1_happy_path_first_run() {
+    let ctx = baseline(TestContext::builder().inventory_enabled()).build();
+
+    let outcome = ctx.run_cycle().await;
+
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert!(ctx.rebuild_was_called());
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA));
+    assert_eq!(ctx.dynamo_last_status(), "ok");
+    assert_eq!(ctx.dynamo_last_applied_sha(), TEST_SHA);
+    assert_eq!(ctx.dynamo_last_target_sha(), TEST_SHA);
+    assert!(
+        ctx.nixos_config_file().unwrap().contains(TEST_ROLE),
+        "configuration.nix written and references role"
+    );
+}
+
+// ─── 12.2 No-op — symlink already at target ─────────────────────────────────
+
+#[tokio::test]
+async fn test_12_2_symlink_already_at_target() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .seed_symlink(TEST_SHA)
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+
+    assert_eq!(outcome, CycleOutcome::NoOp);
+    assert!(!ctx.rebuild_was_called());
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA));
+    assert_eq!(ctx.dynamo_last_status(), "ok");
+    assert_eq!(ctx.dynamo_last_applied_sha(), TEST_SHA);
+    assert_eq!(ctx.dynamo_last_target_sha(), TEST_SHA);
+}
+
+// ─── 12.3 Apply triggered — pointer flipped ─────────────────────────────────
+
+#[tokio::test]
+async fn test_12_3_pointer_flipped() {
+    // Symlink at TEST_SHA_2, pointer at TEST_SHA — should apply TEST_SHA
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .seed_symlink(TEST_SHA_2)
         .build();
 
     let outcome = ctx.run_cycle().await;
 
     assert_eq!(outcome, CycleOutcome::Applied);
     assert!(ctx.rebuild_was_called());
-    assert!(!ctx.last_hash().is_empty());
-    assert_eq!(ctx.last_hash(), ctx.computed_hash());
-    assert_eq!(ctx.dynamo_status(), "ok");
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA));
+    assert_eq!(ctx.dynamo_last_applied_sha(), TEST_SHA);
 }
 
-// ─── 9.2 No-op — hash unchanged ───────────────────────────────────────────────
+// ─── 12.4 Canary skip ────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_9_2_hash_unchanged_no_rebuild() {
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
-        .build();
-
-    ctx.run_cycle().await;
-    let hash_after_first = ctx.last_hash();
-
-    let outcome = ctx.run_cycle().await;
-
-    assert_eq!(outcome, CycleOutcome::HashUnchanged);
-    assert_eq!(ctx.rebuild_call_count(), 1, "rebuild called only once total");
-    assert_eq!(ctx.last_hash(), hash_after_first);
-    assert_eq!(ctx.dynamo_status(), "ok");
-}
-
-// ─── 9.3 Apply triggered — hash changed ───────────────────────────────────────
-
-#[tokio::test]
-async fn test_9_3_hash_changed_triggers_rebuild() {
-    let ctx1 = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
-        .build();
-    let outcome1 = ctx1.run_cycle().await;
-    assert_eq!(outcome1, CycleOutcome::Applied);
-    let first_hash = ctx1.last_hash();
-
-    let ctx2 = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: { # changed }")
-        .last_hash(first_hash.clone())
-        .build();
-    let outcome2 = ctx2.run_cycle().await;
-
-    assert_eq!(outcome2, CycleOutcome::Applied);
-    assert!(ctx2.rebuild_was_called());
-    assert_ne!(ctx2.last_hash(), first_hash);
-    assert_eq!(ctx2.last_hash(), ctx2.computed_hash());
-}
-
-// ─── 9.4 Canary skip ──────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_9_4_canary_skip() {
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .hostname("ada-01.waldman.internal")
-        .s3_file("canary.txt", "ada-02.waldman.internal\n")
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
+async fn test_12_4_canary_skip() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .seed_symlink(TEST_SHA_2)
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/canary.txt"),
+            "some-other-host.example.com\n",
+        )
         .build();
 
     let outcome = ctx.run_cycle().await;
 
     assert_eq!(outcome, CycleOutcome::CanarySkip);
     assert!(!ctx.rebuild_was_called());
-    assert!(ctx.last_hash().is_empty(), "hash not updated on canary skip");
-    assert_eq!(ctx.dynamo_status(), "canary_skip");
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA_2));
+    assert_eq!(ctx.dynamo_last_status(), "canary_skip");
+    assert_eq!(ctx.dynamo_last_applied_sha(), TEST_SHA_2);
+    assert_eq!(ctx.dynamo_last_target_sha(), TEST_SHA);
 }
 
-// ─── 9.5 nixos-rebuild failure — no hash update ────────────────────────────────
+// ─── 12.4b Canary listed — apply ─────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_9_5_rebuild_failure_no_hash_update() {
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
+async fn test_12_4b_canary_hostname_listed() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .seed_symlink(TEST_SHA_2)
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/canary.txt"),
+            format!("{TEST_HOST}\n"),
+        )
+        .build();
+
+    let outcome = ctx.run_cycle().await;
+
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert!(ctx.rebuild_was_called());
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA));
+}
+
+// ─── 12.5 Rebuild failure — no symlink advance ──────────────────────────────
+
+#[tokio::test]
+async fn test_12_5_rebuild_failure_symlink_unchanged() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .seed_symlink(TEST_SHA_2)
         .rebuild_exit_code(1)
         .build();
 
@@ -100,14 +125,20 @@ async fn test_9_5_rebuild_failure_no_hash_update() {
 
     assert_eq!(outcome, CycleOutcome::RebuildFailed);
     assert!(ctx.rebuild_was_called());
-    assert!(ctx.last_hash().is_empty(), "hash must not be updated on failure");
-    assert_eq!(ctx.dynamo_status(), "failed");
+    assert_eq!(
+        ctx.symlink_target().as_deref(),
+        Some(TEST_SHA_2),
+        "symlink must stay at prior sha"
+    );
+    assert_eq!(ctx.dynamo_last_status(), "failed");
+    assert_eq!(ctx.dynamo_last_applied_sha(), TEST_SHA_2);
+    assert_eq!(ctx.dynamo_last_target_sha(), TEST_SHA);
 }
 
-// ─── 9.6 S3 download failure ──────────────────────────────────────────────────
+// ─── 12.6 S3 pointer fetch failure ──────────────────────────────────────────
 
 #[tokio::test]
-async fn test_9_6_s3_failure_apply_skipped() {
+async fn test_12_6_s3_pointer_failure() {
     let ctx = TestContext::builder()
         .inventory_enabled()
         .s3_get_error()
@@ -117,53 +148,80 @@ async fn test_9_6_s3_failure_apply_skipped() {
 
     assert_eq!(outcome, CycleOutcome::S3Error);
     assert!(!ctx.rebuild_was_called());
-    assert!(ctx.last_hash().is_empty());
-    assert_eq!(ctx.dynamo_status(), "failed");
+    assert_eq!(ctx.symlink_target(), None);
+    assert_eq!(ctx.dynamo_last_status(), "failed");
+    assert_eq!(ctx.dynamo_last_target_sha(), "");
 }
 
-// ─── 9.7 Host main.nix absent — apply succeeds ───────────────────────────────
+// ─── 12.7 Malformed pointer ──────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_9_7_no_host_main_nix() {
+async fn test_12_7_malformed_pointer() {
     let ctx = TestContext::builder()
         .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
-        // NO host main.nix
+        .s3_file("current", "not-a-sha")
         .build();
 
     let outcome = ctx.run_cycle().await;
 
-    assert_eq!(outcome, CycleOutcome::Applied);
-    assert!(ctx.rebuild_was_called());
+    assert_eq!(outcome, CycleOutcome::S3Error);
+    assert!(!ctx.rebuild_was_called());
+    assert_eq!(ctx.dynamo_last_status(), "failed");
+    assert_eq!(ctx.dynamo_last_target_sha(), "");
+}
 
-    let config_nix = ctx.work_dir_file("configuration.nix").unwrap();
+// ─── 12.9 Host main.nix absent — apply succeeds ─────────────────────────────
+
+#[tokio::test]
+async fn test_12_9_no_host_main_nix() {
+    let ctx = baseline(TestContext::builder().inventory_enabled()).build();
+
+    let outcome = ctx.run_cycle().await;
+
+    assert_eq!(outcome, CycleOutcome::Applied);
+    let config_nix = ctx.nixos_config_file().unwrap();
     assert!(
-        !config_nix.contains("ada-01.waldman.internal/main.nix"),
-        "host import must not appear"
+        !config_nix.contains(&format!("{TEST_HOST}/main.nix")),
+        "host import must not appear when no host main.nix in tree"
     );
 }
 
-// ─── 9.8 Inventory disabled — no DynamoDB writes ─────────────────────────────
+// ─── 12.9b Host main.nix present — imports it ───────────────────────────────
 
 #[tokio::test]
-async fn test_9_8_inventory_disabled_no_dynamo() {
-    let ctx = TestContext::builder()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
+async fn test_12_9b_host_main_nix_present() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(
+            TEST_SHA,
+            format!("roles/{TEST_ROLE}/{TEST_HOST}/main.nix"),
+            "{ ... }: {}",
+        )
         .build();
 
     let outcome = ctx.run_cycle().await;
 
     assert_eq!(outcome, CycleOutcome::Applied);
-    assert_eq!(ctx.dynamo_put_count(), 0, "DynamoDB must not be called when inventory disabled");
+    let config_nix = ctx.nixos_config_file().unwrap();
+    assert!(config_nix.contains(&format!("{TEST_HOST}/main.nix")));
 }
 
-// ─── 9.9 Inventory write failure — apply continues ───────────────────────────
+// ─── 12.10 Inventory disabled — no DynamoDB writes ──────────────────────────
 
 #[tokio::test]
-async fn test_9_9_dynamo_failure_apply_continues() {
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
+async fn test_12_10_inventory_disabled() {
+    let ctx = baseline(TestContext::builder()).build();
+
+    let outcome = ctx.run_cycle().await;
+
+    assert_eq!(outcome, CycleOutcome::Applied);
+    assert_eq!(ctx.dynamo_put_count(), 0);
+}
+
+// ─── 12.11 Inventory write failure — apply continues ────────────────────────
+
+#[tokio::test]
+async fn test_12_11_dynamo_failure_apply_continues() {
+    let ctx = baseline(TestContext::builder().inventory_enabled())
         .dynamo_error()
         .build();
 
@@ -171,18 +229,17 @@ async fn test_9_9_dynamo_failure_apply_continues() {
 
     assert_eq!(outcome, CycleOutcome::Applied);
     assert!(ctx.rebuild_was_called());
+    assert_eq!(ctx.symlink_target().as_deref(), Some(TEST_SHA));
 }
 
-// ─── 9.10 Secrets fetched before rebuild ─────────────────────────────────────
+// ─── 12.12 Secrets fetched, host wins over role ─────────────────────────────
 
 #[tokio::test]
-async fn test_9_10_secrets_fetched_before_rebuild() {
-    let role_secret = "NixOps/home/production/ada/shared/api-key";
-    let host_secret = "NixOps/home/production/ada/ada-01.waldman.internal/api-key";
+async fn test_12_12_secrets_host_wins() {
+    let role_secret = format!("NixOps/{TEST_ROLE}/shared/api-key");
+    let host_secret = format!("NixOps/{TEST_ROLE}/{TEST_HOST}/api-key");
 
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
+    let ctx = baseline(TestContext::builder().inventory_enabled())
         .secret(role_secret, "role-value")
         .secret(host_secret, "host-value")
         .build();
@@ -194,10 +251,10 @@ async fn test_9_10_secrets_fetched_before_rebuild() {
     assert_eq!(secret, "host-value");
 }
 
-// ─── 9.11 Query results written before rebuild ────────────────────────────────
+// ─── 12.13 Query results written before rebuild ─────────────────────────────
 
 #[tokio::test]
-async fn test_9_11_inventory_json_written() {
+async fn test_12_13_inventory_json_written() {
     let queries_toml = r#"
 [[query]]
 name        = "zk_nodes"
@@ -211,10 +268,8 @@ role_prefix = "home/production/zookeeper"
         last_run_status: "ok".to_string(),
     };
 
-    let ctx = TestContext::builder()
-        .inventory_enabled()
-        .s3_file("roles/home/production/ada/main.nix", "{ ... }: {}")
-        .s3_file("roles/home/production/ada/queries.toml", queries_toml)
+    let ctx = baseline(TestContext::builder().inventory_enabled())
+        .commit_file(TEST_SHA, format!("roles/{TEST_ROLE}/queries.toml"), queries_toml)
         .inventory_items(vec![zk_item])
         .build();
 
@@ -222,4 +277,37 @@ role_prefix = "home/production/zookeeper"
 
     assert_eq!(outcome, CycleOutcome::Applied);
     assert!(ctx.rebuild_was_called());
+    let inv_path = ctx.var_dir.path().join("inventory.json");
+    assert!(inv_path.exists(), "inventory.json should be written");
+    let content = std::fs::read_to_string(&inv_path).unwrap();
+    assert!(content.contains("zk_nodes"));
+    assert!(content.contains("zk-01.waldman.internal"));
+}
+
+// ─── 12.14 NIX_PATH — `-I nixops3=...` points at local tree ─────────────────
+
+#[tokio::test]
+async fn test_12_14_nix_path_resolution() {
+    let ctx = baseline(TestContext::builder().inventory_enabled()).build();
+
+    ctx.run_cycle().await;
+
+    let calls = ctx.executor.calls.lock().unwrap();
+    let rebuild_call = calls
+        .iter()
+        .find(|c| c.first().map(|s| s == "nixos-rebuild").unwrap_or(false))
+        .expect("nixos-rebuild called");
+    let joined = rebuild_call.join(" ");
+    assert!(
+        joined.contains(&format!(
+            "nixops3={}",
+            ctx.var_dir.path().join("commits").join(TEST_SHA).display()
+        )),
+        "-I nixops3= should point at the local commit tree; got: {joined}"
+    );
+    // Should NOT contain -I nixos-config= (default location used)
+    assert!(
+        !joined.contains("nixos-config="),
+        "should not pass -I nixos-config= (default location used)"
+    );
 }

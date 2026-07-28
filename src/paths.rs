@@ -1,76 +1,100 @@
-/// S3 key for the role's main.nix
-pub fn role_main_nix(role: &str) -> String {
-    format!("roles/{}/main.nix", role)
+// S3 key builders.
+//
+// The bucket has exactly one root-level object (`current`) plus a tree of
+// immutable per-commit prefixes under `commits/<sha>/`. Everything is
+// commit-scoped.
+
+/// The bucket-root pointer object.
+pub const POINTER_KEY: &str = "current";
+
+/// Prefix for the commit tree of a given sha (trailing slash included).
+pub fn commit_prefix(sha: &str) -> String {
+    format!("commits/{sha}/")
 }
 
-/// S3 key for the host-specific main.nix
-pub fn host_main_nix(role: &str, hostname: &str) -> String {
-    format!("roles/{}/{}/main.nix", role, hostname)
+/// Role-scoped canary.txt inside the commit tree.
+pub fn commit_canary(sha: &str, role: &str) -> String {
+    format!("commits/{sha}/roles/{role}/canary.txt")
 }
 
-/// S3 key for the role-level queries.toml
-pub fn role_queries_toml(role: &str) -> String {
-    format!("roles/{}/queries.toml", role)
+/// Role main.nix inside the commit tree.
+pub fn commit_role_main(sha: &str, role: &str) -> String {
+    format!("commits/{sha}/roles/{role}/main.nix")
 }
 
-/// S3 key for the host-level queries.toml
-pub fn host_queries_toml(role: &str, hostname: &str) -> String {
-    format!("roles/{}/{}/queries.toml", role, hostname)
+/// Host-scoped main.nix inside the commit tree.
+pub fn commit_host_main(sha: &str, role: &str, hostname: &str) -> String {
+    format!("commits/{sha}/roles/{role}/{hostname}/main.nix")
 }
 
-/// Secrets Manager prefix for role-level (shared) secrets
+/// Role-scoped queries.toml.
+pub fn commit_role_queries(sha: &str, role: &str) -> String {
+    format!("commits/{sha}/roles/{role}/queries.toml")
+}
+
+/// Host-scoped queries.toml.
+pub fn commit_host_queries(sha: &str, role: &str, hostname: &str) -> String {
+    format!("commits/{sha}/roles/{role}/{hostname}/queries.toml")
+}
+
+/// Secrets Manager prefix for role-level (shared) secrets. Not commit-scoped.
 pub fn secrets_role_prefix(role: &str) -> String {
-    format!("NixOps/{}/shared/", role)
+    format!("NixOps/{role}/shared/")
 }
 
-/// Secrets Manager prefix for host-level secrets
+/// Secrets Manager prefix for host-level secrets. Not commit-scoped.
 pub fn secrets_host_prefix(role: &str, hostname: &str) -> String {
-    format!("NixOps/{}/{}/", role, hostname)
+    format!("NixOps/{role}/{hostname}/")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SHA: &str = "abc1234";
+    const ROLE: &str = "home/production/webserver";
+    const HOST: &str = "web-01.waldman.internal";
+
     #[test]
-    fn test_2_1_role_main_nix() {
-        assert_eq!(role_main_nix("home/production/ada"), "roles/home/production/ada/main.nix");
+    fn test_2_1_pointer_path() {
+        assert_eq!(POINTER_KEY, "current");
     }
 
     #[test]
-    fn test_2_2_host_main_nix() {
+    fn test_2_2_commit_prefix() {
+        assert_eq!(commit_prefix(SHA), "commits/abc1234/");
+    }
+
+    #[test]
+    fn test_2_3_role_main() {
         assert_eq!(
-            host_main_nix("home/production/ada", "ada-01.waldman.internal"),
-            "roles/home/production/ada/ada-01.waldman.internal/main.nix"
+            commit_role_main(SHA, ROLE),
+            "commits/abc1234/roles/home/production/webserver/main.nix"
         );
     }
 
     #[test]
-    fn test_2_3_queries_toml_paths() {
+    fn test_2_4_host_main() {
         assert_eq!(
-            role_queries_toml("home/production/ada"),
-            "roles/home/production/ada/queries.toml"
-        );
-        assert_eq!(
-            host_queries_toml("home/production/ada", "ada-01.waldman.internal"),
-            "roles/home/production/ada/ada-01.waldman.internal/queries.toml"
+            commit_host_main(SHA, ROLE, HOST),
+            "commits/abc1234/roles/home/production/webserver/web-01.waldman.internal/main.nix"
         );
     }
 
     #[test]
-    fn test_2_4_canary_path() {
-        assert_eq!("canary.txt", "canary.txt");
+    fn test_2_5_canary_path() {
+        assert_eq!(
+            commit_canary(SHA, ROLE),
+            "commits/abc1234/roles/home/production/webserver/canary.txt"
+        );
     }
 
     #[test]
-    fn test_2_5_secrets_prefixes() {
+    fn test_2_6_secrets_prefixes() {
+        assert_eq!(secrets_role_prefix(ROLE), "NixOps/home/production/webserver/shared/");
         assert_eq!(
-            secrets_role_prefix("home/production/ada"),
-            "NixOps/home/production/ada/shared/"
-        );
-        assert_eq!(
-            secrets_host_prefix("home/production/ada", "ada-01.waldman.internal"),
-            "NixOps/home/production/ada/ada-01.waldman.internal/"
+            secrets_host_prefix(ROLE, HOST),
+            "NixOps/home/production/webserver/web-01.waldman.internal/"
         );
     }
 }

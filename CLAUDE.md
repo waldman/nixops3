@@ -98,10 +98,10 @@ to stop and reconsider.
 
 ## 6. Absolute rule for this project: spec before code
 
-This project has a `specs/` directory. **No code changes without a spec.**
-The hook at `.claude/scripts/spec-check.sh` enforces this by blocking
-Edit/Write on code files unless a `.claude/spec-ack` file exists referencing
-an existing spec.
+This project uses **Spec-Driven Development (SDD)**. **No code changes
+without a spec.** The hook at `.claude/scripts/spec-check.sh` enforces
+this by blocking Edit/Write on code files unless a `.claude/spec-ack`
+file exists referencing an existing spec.
 
 Workflow for any change:
 
@@ -112,6 +112,25 @@ Workflow for any change:
 
 Drifts between spec and code are bugs. Finding one is a STOP moment: report
 and align before adding more code.
+
+Additional SDD rules:
+- If a spec is ambiguous, stop and ask — do not interpret silently.
+- Tests are written alongside or before implementation, never after.
+
+### Spec location
+
+All specs live in `specs/`. Files are numbered for reading order:
+
+```
+specs/
+  00-overview.md        — system goals, non-goals, architecture
+  01-s3-structure.md    — S3 bucket layout, hierarchy, magic filenames
+  02-daemon.md          — nixops3d daemon: config, loop, apply pipeline
+  03-canary.md          — canary rollout mechanism
+  04-inventory.md       — DynamoDB inventory, heartbeat, search queries
+  05-secrets.md         — AWS Secrets Manager integration
+  06-bootstrap.md       — Golden ISO, first boot, machine identity
+```
 
 ## 7. Project-specific facts
 
@@ -132,5 +151,3 @@ and align before adding more code.
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
-@CLAUDE.local.md

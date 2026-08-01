@@ -14,8 +14,8 @@ NixOps/<abstraction>/<environment>/<role>/<hostname>/<secret-name>
 
 Examples:
 ```
-NixOps/home/production/ada/ada-01.example.internal/openrouter-api-key
-NixOps/home/production/ada/ada-01.example.internal/whatsapp-allowed-users
+NixOps/home/production/app/app-01.example.internal/example-api-key
+NixOps/home/production/app/app-01.example.internal/example-allowed-users
 NixOps/home/production/zookeeper/zk-01.example.internal/keystore-password
 ```
 
@@ -56,7 +56,7 @@ The directory is recreated on each daemon start (tmpfs is cleared on reboot). Se
 {
   systemd.services.hermes-gateway = {
     serviceConfig = {
-      EnvironmentFile = "/run/nixops3/secrets/openrouter-api-key";
+      EnvironmentFile = "/run/nixops3/secrets/example-api-key";
     };
   };
 }
@@ -66,7 +66,7 @@ Or read directly:
 
 ```nix
 let
-  apiKey = builtins.readFile /run/nixops3/secrets/openrouter-api-key;
+  apiKey = builtins.readFile /run/nixops3/secrets/example-api-key;
 in { ... }
 ```
 

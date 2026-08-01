@@ -33,7 +33,7 @@ Pseudo-steps of auto-install script:
 4. Mount at /mnt
 5. nixos-generate-config --root /mnt
 6. Copy /etc/nixops3/nixops3.toml to /mnt/etc/nixops3/
-7. Copy ada-server/configuration.nix to /mnt/etc/nixos/
+7. Copy app-server/configuration.nix to /mnt/etc/nixos/
 8. nixos-install --no-root-passwd
 9. Print IP address to console/serial
 10. Reboot
@@ -43,7 +43,7 @@ The installed system boots with `nixops3` enabled. On first poll, it fetches and
 
 ### Role-Specific ISOs
 
-A single ISO may target one role (e.g., `home/production/ada`) or be generic (role configured at install time via kernel cmdline `nixops3.role=home/production/ada`).
+A single ISO may target one role (e.g., `home/production/app`) or be generic (role configured at install time via kernel cmdline `nixops3.role=home/production/app`).
 
 For v1: role is hardcoded in the ISO. One ISO per role is acceptable at small fleet sizes.
 
@@ -76,7 +76,7 @@ write_files:
     content: |
       bucket = "nixops3-example"
       region = "us-east-1"
-      role   = "home/production/ada"
+      role   = "home/production/app"
 
       [aws]
       access_key_id     = "AKIA..."

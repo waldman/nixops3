@@ -126,7 +126,7 @@ table   = "nixops3-inventory"
 ```toml
 bucket = "nixops3-homelab"
 region = "us-east-1"
-role   = "home/production/ada"
+role   = "home/production/app"
 
 [aws]
 access_key_id     = "AKIA..."

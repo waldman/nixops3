@@ -19,7 +19,7 @@ The feature is opt-in. Disabling it has no effect on config apply behaviour.
 
 | Attribute | Type | Source | Example |
 |-----------|------|--------|---------|
-| `hostname` | S | `/proc/sys/kernel/hostname` | `web-01.waldman.internal` |
+| `hostname` | S | `/proc/sys/kernel/hostname` | `web-01.example.internal` |
 | `machine_id` | S | `/etc/machine-id` | `a1b2c3d4...` |
 | `role` | S | `nixops3.toml` | `home/production/webserver` |
 | `iface` | S | primary network interface | `eth0` |
@@ -154,7 +154,7 @@ Written to `/var/lib/nixops3/inventory.json` before `nixos-rebuild switch`:
   "queries": {
     "zookeeper_nodes": [
       {
-        "hostname": "zk-01.waldman.internal",
+        "hostname": "zk-01.example.internal",
         "ip": "192.168.15.10",
         "role": "home/production/zookeeper",
         "last_run_status": "ok"

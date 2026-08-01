@@ -42,7 +42,7 @@ one poll cycle (single-shot behaviour). Does not enter the daemon loop.
 
 ```toml
 # Required
-bucket = "nixops3-waldman"
+bucket = "nixops3-example"
 region = "us-east-1"
 role   = "home/production/webserver"    # full S3 path to the role directory
 
@@ -244,7 +244,7 @@ fresh machines. Roles that manage a real bootloader must override with
   imports = [
     /etc/nixos/hardware-configuration.nix
     /var/lib/nixops3/commits/abc1234/roles/home/production/webserver/main.nix
-    /var/lib/nixops3/commits/abc1234/roles/home/production/webserver/web-01.waldman.internal/main.nix
+    /var/lib/nixops3/commits/abc1234/roles/home/production/webserver/web-01.example.internal/main.nix
   ];
 
   boot.loader.grub.device = lib.mkDefault "nodev";

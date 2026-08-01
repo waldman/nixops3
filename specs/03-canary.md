@@ -20,8 +20,8 @@ commits/<sha>/roles/<abstraction>/<environment>/<role>/canary.txt
 **Format**: plain text, one FQDN per line, Unix line endings.
 
 ```
-web-01.waldman.internal
-web-02.waldman.internal
+web-01.example.internal
+web-02.example.internal
 ```
 
 Blank lines and lines starting with `#` are ignored.

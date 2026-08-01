@@ -53,7 +53,7 @@ mod tests {
 
     const SHA: &str = "abc1234";
     const ROLE: &str = "home/production/webserver";
-    const HOST: &str = "web-01.waldman.internal";
+    const HOST: &str = "web-01.example.internal";
 
     #[test]
     fn test_2_1_pointer_path() {
@@ -77,7 +77,7 @@ mod tests {
     fn test_2_4_host_main() {
         assert_eq!(
             commit_host_main(SHA, ROLE, HOST),
-            "commits/abc1234/roles/home/production/webserver/hosts/web-01.waldman.internal/main.nix"
+            "commits/abc1234/roles/home/production/webserver/hosts/web-01.example.internal/main.nix"
         );
     }
 
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(secrets_role_prefix(ROLE), "NixOps/home/production/webserver/shared/");
         assert_eq!(
             secrets_host_prefix(ROLE, HOST),
-            "NixOps/home/production/webserver/web-01.waldman.internal/"
+            "NixOps/home/production/webserver/web-01.example.internal/"
         );
     }
 }

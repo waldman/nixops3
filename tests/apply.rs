@@ -262,7 +262,7 @@ queries:
 "#;
 
     let zk_item = InventoryItem {
-        hostname: "zk-01.waldman.internal".to_string(),
+        hostname: "zk-01.example.internal".to_string(),
         ip: "192.168.1.10".to_string(),
         role: "home/production/zookeeper".to_string(),
         last_run_status: "ok".to_string(),
@@ -281,7 +281,7 @@ queries:
     assert!(inv_path.exists(), "inventory.json should be written");
     let content = std::fs::read_to_string(&inv_path).unwrap();
     assert!(content.contains("zk_nodes"));
-    assert!(content.contains("zk-01.waldman.internal"));
+    assert!(content.contains("zk-01.example.internal"));
 }
 
 // ─── 12.14 NIX_PATH — `-I nixops3=...` points at local tree ─────────────────

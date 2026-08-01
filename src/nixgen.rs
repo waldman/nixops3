@@ -47,7 +47,7 @@ mod tests {
 
     const SHA: &str = "abc1234";
     const ROLE: &str = "home/production/webserver";
-    const HOST: &str = "web-01.waldman.internal";
+    const HOST: &str = "web-01.example.internal";
 
     fn tree_dir() -> PathBuf {
         PathBuf::from(format!("/var/lib/nixops3/commits/{SHA}"))

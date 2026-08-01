@@ -18,8 +18,8 @@ NixOps/<role>/<hostname>/<secret-name>   ← specific to one host
 Examples:
 
 ```
-NixOps/home/production/ada/shared/openrouter-api-key
-NixOps/home/production/ada/ada-01.example.internal/whatsapp-token
+NixOps/home/production/app/shared/example-api-key
+NixOps/home/production/app/app-01.example.internal/example-token
 NixOps/home/production/zookeeper/shared/keystore-password
 NixOps/home/production/zookeeper/zk-01.example.internal/keystore-password
 ```
@@ -142,7 +142,7 @@ Create a secret:
 
 ```bash
 aws secretsmanager create-secret \
-  --name "NixOps/home/production/ada/shared/openrouter-api-key" \
+  --name "NixOps/home/production/app/shared/example-api-key" \
   --secret-string "sk-..."
 ```
 
@@ -150,7 +150,7 @@ Rotate a secret:
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id "NixOps/home/production/ada/shared/openrouter-api-key" \
+  --secret-id "NixOps/home/production/app/shared/example-api-key" \
   --secret-string "sk-new..."
 ```
 

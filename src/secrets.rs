@@ -70,21 +70,21 @@ mod tests {
 
     #[test]
     fn test_7_1_role_level_prefix() {
-        assert_eq!(secrets_role_prefix("home/production/ada"), "NixOps/home/production/ada/shared/");
+        assert_eq!(secrets_role_prefix("home/production/app"), "NixOps/home/production/app/shared/");
     }
 
     #[test]
     fn test_7_2_host_level_prefix() {
         assert_eq!(
-            secrets_host_prefix("home/production/ada", "ada-01.example.internal"),
-            "NixOps/home/production/ada/ada-01.example.internal/"
+            secrets_host_prefix("home/production/app", "app-01.example.internal"),
+            "NixOps/home/production/app/app-01.example.internal/"
         );
     }
 
     #[test]
     fn test_7_3_local_path_for_secret() {
         let dir = std::path::Path::new("/run/nixops3/secrets");
-        let path = dir.join("openrouter-api-key");
-        assert_eq!(path.to_str().unwrap(), "/run/nixops3/secrets/openrouter-api-key");
+        let path = dir.join("example-api-key");
+        assert_eq!(path.to_str().unwrap(), "/run/nixops3/secrets/example-api-key");
     }
 }

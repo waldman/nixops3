@@ -318,7 +318,7 @@ Expected: `"NixOps/home/production/webserver/shared/"`.
 Expected: `"NixOps/home/production/webserver/web-01.example.internal/"`.
 
 **7.3 local path for secret**
-Expected: `/run/nixops3/secrets/openrouter-api-key`.
+Expected: `/run/nixops3/secrets/example-api-key`.
 
 **7.4 host secret overrides role secret**
 Expected: host-level value written to disk.

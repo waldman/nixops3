@@ -131,7 +131,7 @@ mod tests {
         r#"
 bucket = "nixops3-example"
 region = "us-east-1"
-role   = "home/production/ada"
+role   = "home/production/app"
 "#
     }
 
@@ -140,7 +140,7 @@ role   = "home/production/ada"
         let toml = r#"
 bucket = "nixops3-example"
 region = "us-east-1"
-role   = "home/production/ada"
+role   = "home/production/app"
 poll_interval_secs = 300
 
 [aws]
@@ -154,7 +154,7 @@ table   = "nixops3-inventory"
         let cfg = Config::from_toml(toml).unwrap();
         assert_eq!(cfg.bucket, "nixops3-example");
         assert_eq!(cfg.region, "us-east-1");
-        assert_eq!(cfg.role, "home/production/ada");
+        assert_eq!(cfg.role, "home/production/app");
         assert_eq!(cfg.poll_interval_secs, 300);
         assert!(cfg.aws.is_some());
         assert!(cfg.inventory.enabled);
@@ -185,13 +185,13 @@ table   = "nixops3-inventory"
 
     #[test]
     fn test_1_3_missing_bucket() {
-        let toml = "region = \"us-east-1\"\nrole = \"home/production/ada\"";
+        let toml = "region = \"us-east-1\"\nrole = \"home/production/app\"";
         assert!(Config::from_toml(toml).is_err());
     }
 
     #[test]
     fn test_1_4_missing_region() {
-        let toml = "bucket = \"b\"\nrole = \"home/production/ada\"";
+        let toml = "bucket = \"b\"\nrole = \"home/production/app\"";
         assert!(Config::from_toml(toml).is_err());
     }
 

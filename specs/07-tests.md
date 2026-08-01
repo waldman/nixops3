@@ -68,8 +68,8 @@ Input: `sha = "abc1234"`, `role = "home/production/webserver"`.
 Expected: `"commits/abc1234/roles/home/production/webserver/main.nix"`.
 
 **2.4 host main.nix path**
-Input: `sha = "abc1234"`, `role = "home/production/webserver"`, `hostname = "web-01.waldman.internal"`.
-Expected: `"commits/abc1234/roles/home/production/webserver/web-01.waldman.internal/main.nix"`.
+Input: `sha = "abc1234"`, `role = "home/production/webserver"`, `hostname = "web-01.example.internal"`.
+Expected: `"commits/abc1234/roles/home/production/webserver/web-01.example.internal/main.nix"`.
 
 **2.5 canary.txt path (role-scoped, per-commit)**
 Input: `sha = "abc1234"`, `role = "home/production/webserver"`.
@@ -78,7 +78,7 @@ Expected: `"commits/abc1234/roles/home/production/webserver/canary.txt"`.
 **2.6 secrets prefixes**
 Expected:
 - Role prefix: `"NixOps/home/production/webserver/shared/"`
-- Host prefix: `"NixOps/home/production/webserver/web-01.waldman.internal/"`
+- Host prefix: `"NixOps/home/production/webserver/web-01.example.internal/"`
 
 ---
 
@@ -124,11 +124,11 @@ Input: S3 returns 404 for `commits/<sha>/roles/<role>/canary.txt`.
 Expected: `CanaryResult::Apply`. Log level: debug (not warn).
 
 **4.2 hostname listed — apply**
-Input: canary.txt contains `web-01.waldman.internal\n`. Hostname: `web-01.waldman.internal`.
+Input: canary.txt contains `web-01.example.internal\n`. Hostname: `web-01.example.internal`.
 Expected: `CanaryResult::Apply`.
 
 **4.3 hostname not listed — skip**
-Input: canary.txt contains `web-02.waldman.internal\n`. Hostname: `web-01.waldman.internal`.
+Input: canary.txt contains `web-02.example.internal\n`. Hostname: `web-01.example.internal`.
 Expected: `CanaryResult::Skip`.
 
 **4.4 empty canary file — all skip**
@@ -136,15 +136,15 @@ Input: canary.txt is empty. Any hostname.
 Expected: `CanaryResult::Skip`.
 
 **4.5 hostname partial match not accepted**
-Input: canary.txt contains `web-01\n`. Hostname: `web-01.waldman.internal`.
+Input: canary.txt contains `web-01\n`. Hostname: `web-01.example.internal`.
 Expected: `CanaryResult::Skip` (exact FQDN match required).
 
 **4.6 comment lines ignored**
-Input: `# comment\nweb-01.waldman.internal\n`.
+Input: `# comment\nweb-01.example.internal\n`.
 Expected: `CanaryResult::Apply`.
 
 **4.7 blank lines ignored**
-Input: `\n\nweb-01.waldman.internal\n\n`.
+Input: `\n\nweb-01.example.internal\n\n`.
 Expected: `CanaryResult::Apply`.
 
 **4.8 multiple hostnames**
@@ -315,7 +315,7 @@ Expected: `nixpkgs_arg` is whatever `find_nixpkgs()` returned (existing v0.3 beh
 Expected: `"NixOps/home/production/webserver/shared/"`.
 
 **7.2 host-level prefix**
-Expected: `"NixOps/home/production/webserver/web-01.waldman.internal/"`.
+Expected: `"NixOps/home/production/webserver/web-01.example.internal/"`.
 
 **7.3 local path for secret**
 Expected: `/run/nixops3/secrets/openrouter-api-key`.

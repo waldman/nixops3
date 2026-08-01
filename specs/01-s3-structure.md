@@ -83,7 +83,7 @@ Torn-read hazard: none. The pointer flip is a single atomic S3 PUT.
 | abstraction | `home`, `aws-us-east-1` | Infrastructure or organisational boundary |
 | environment | `production`, `staging` | Deployment phase |
 | role | `webserver`, `generic_node` | Machine function |
-| hostname | `web-01.waldman.internal` | Individual host overrides |
+| hostname | `web-01.example.internal` | Individual host overrides |
 
 The abstraction level is intentionally free-form. The daemon does not
 interpret its semantics; it treats the concatenated path as an S3 prefix.
@@ -175,7 +175,7 @@ Host-level `files/` works the same way from within `hosts/<fqdn>/main.nix`.
 ```nix
 { ... }:
 {
-  networking.hostName = "web-01.waldman.internal";
+  networking.hostName = "web-01.example.internal";
 
   users.users.local-admin = {
     isNormalUser = true;

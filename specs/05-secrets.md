@@ -14,9 +14,9 @@ NixOps/<abstraction>/<environment>/<role>/<hostname>/<secret-name>
 
 Examples:
 ```
-NixOps/home/production/ada/ada-01.waldman.internal/openrouter-api-key
-NixOps/home/production/ada/ada-01.waldman.internal/whatsapp-allowed-users
-NixOps/home/production/zookeeper/zk-01.waldman.internal/keystore-password
+NixOps/home/production/ada/ada-01.example.internal/openrouter-api-key
+NixOps/home/production/ada/ada-01.example.internal/whatsapp-allowed-users
+NixOps/home/production/zookeeper/zk-01.example.internal/keystore-password
 ```
 
 The daemon resolves secrets at two levels:

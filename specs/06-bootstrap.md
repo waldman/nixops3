@@ -74,7 +74,7 @@ write_files:
     permissions: '0600'
     owner: root:root
     content: |
-      bucket = "nixops3-waldman"
+      bucket = "nixops3-example"
       region = "us-east-1"
       role   = "home/production/ada"
 

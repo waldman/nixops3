@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="/home/leon/fun/waldman/code/nixops3"
+PROJECT_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 SPECS_DIR="$PROJECT_ROOT/specs"
 ACK_FILE="$PROJECT_ROOT/.claude/spec-ack"
 ACK_MAX_AGE_SECS=600   # 10 minutes

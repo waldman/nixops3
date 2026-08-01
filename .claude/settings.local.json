@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/leon/fun/waldman/code/nixops3/.claude/scripts/spec-check.sh"
+            "command": ".claude/scripts/spec-check.sh"
           }
         ]
       }

@@ -19,9 +19,9 @@ Examples:
 
 ```
 NixOps/home/production/ada/shared/openrouter-api-key
-NixOps/home/production/ada/ada-01.waldman.internal/whatsapp-token
+NixOps/home/production/ada/ada-01.example.internal/whatsapp-token
 NixOps/home/production/zookeeper/shared/keystore-password
-NixOps/home/production/zookeeper/zk-01.waldman.internal/keystore-password
+NixOps/home/production/zookeeper/zk-01.example.internal/keystore-password
 ```
 
 If the same `<secret-name>` exists at both levels, the **host-level value wins**.

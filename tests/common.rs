@@ -13,7 +13,7 @@ use tempfile::TempDir;
 pub const TEST_SHA: &str = "abcdef1234567890abcdef1234567890abcdef12";
 pub const TEST_SHA_2: &str = "1234567890abcdef1234567890abcdef12345678";
 pub const TEST_ROLE: &str = "home/production/webserver";
-pub const TEST_HOST: &str = "web-01.waldman.internal";
+pub const TEST_HOST: &str = "web-01.example.internal";
 
 // ─── MockS3 ──────────────────────────────────────────────────────────────────
 

@@ -76,8 +76,8 @@ mod tests {
     #[test]
     fn test_7_2_host_level_prefix() {
         assert_eq!(
-            secrets_host_prefix("home/production/ada", "ada-01.waldman.internal"),
-            "NixOps/home/production/ada/ada-01.waldman.internal/"
+            secrets_host_prefix("home/production/ada", "ada-01.example.internal"),
+            "NixOps/home/production/ada/ada-01.example.internal/"
         );
     }
 

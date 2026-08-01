@@ -129,7 +129,7 @@ mod tests {
 
     fn minimal() -> &'static str {
         r#"
-bucket = "nixops3-waldman"
+bucket = "nixops3-example"
 region = "us-east-1"
 role   = "home/production/ada"
 "#
@@ -138,7 +138,7 @@ role   = "home/production/ada"
     #[test]
     fn test_1_1_valid_full_config() {
         let toml = r#"
-bucket = "nixops3-waldman"
+bucket = "nixops3-example"
 region = "us-east-1"
 role   = "home/production/ada"
 poll_interval_secs = 300
@@ -152,7 +152,7 @@ enabled = true
 table   = "nixops3-inventory"
 "#;
         let cfg = Config::from_toml(toml).unwrap();
-        assert_eq!(cfg.bucket, "nixops3-waldman");
+        assert_eq!(cfg.bucket, "nixops3-example");
         assert_eq!(cfg.region, "us-east-1");
         assert_eq!(cfg.role, "home/production/ada");
         assert_eq!(cfg.poll_interval_secs, 300);

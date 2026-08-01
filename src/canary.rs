@@ -53,7 +53,7 @@ mod tests {
 
     const SHA: &str = "abc1234";
     const ROLE: &str = "home/production/webserver";
-    const HOST: &str = "web-01.waldman.internal";
+    const HOST: &str = "web-01.example.internal";
 
     fn s3_with(content: &str) -> MockS3 {
         let mut m = HashMap::new();
@@ -78,7 +78,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_4_3_hostname_not_listed() {
-        let s3 = s3_with("web-02.waldman.internal\n");
+        let s3 = s3_with("web-02.example.internal\n");
         assert!(!check_canary(&s3, SHA, ROLE, HOST).await.unwrap());
     }
 
@@ -107,8 +107,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_4_8_multiple_hostnames() {
-        let s3 = s3_with(&format!("web-01.waldman.internal\n{HOST}\n"));
-        let host2 = "web-02.waldman.internal";
+        let s3 = s3_with(&format!("web-01.example.internal\n{HOST}\n"));
+        let host2 = "web-02.example.internal";
         assert!(check_canary(&s3, SHA, ROLE, host2).await.is_ok());
     }
 }
